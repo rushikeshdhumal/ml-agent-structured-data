@@ -1,0 +1,26 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+runs/
+mlruns/
+mlflow.db
+mlflow.db-*
+catboost_info/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Claude Code local/session state (project-level .claude/ config is tracked;
+# personal machine-specific overrides are not)
+.claude/settings.local.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

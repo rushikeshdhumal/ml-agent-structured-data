@@ -1,0 +1,99 @@
+eda_task:
+  description: >
+    Call the eda_summary tool exactly once for run {run_id} and summarize the dataset's
+    schema, missingness, cardinality, target correlations, near-duplicate columns, class
+    balance, and any leakage flags. Report only what the tool returned -- never invent
+    statistics.
+  expected_output: >
+    A complete EdaReport covering every field the eda_summary tool returned.
+  agent: eda_analyst
+
+propose_cleaning_task:
+  description: >
+    Using the EDA report as context, propose a per-column CleaningPlan for run {run_id} that
+    addresses missing values, outliers, and any columns worth dropping. Never propose an
+    action on the target column '{target}'. Explain your rationale.
+  expected_output: >
+    A structured CleaningPlan with a clear rationale for every action.
+  agent: cleaning_strategist
+  context:
+    - eda_task
+
+execute_cleaning_task:
+  description: >
+    Call apply_cleaning_plan with exactly the human-approved CleaningPlan from the previous
+    task, incorporating any edits the human made. Do not alter the plan's substance yourself.
+  expected_output: >
+    Confirmation of the dataset's shape before and after cleaning.
+  agent: cleaning_strategist
+  context:
+    - propose_cleaning_task
+
+propose_feature_task:
+  description: >
+    Using the EDA report as context, propose a FeatureEngineeringPlan for run {run_id} that
+    explicitly covers every non-target column with an encoding/scaling choice or lists it in
+    features_to_drop. Never include the target column '{target}' in column_plans.
+  expected_output: >
+    A structured FeatureEngineeringPlan covering every feature column, with rationale.
+  agent: feature_engineer
+  context:
+    - eda_task
+    - execute_cleaning_task
+
+execute_feature_task:
+  description: >
+    Call apply_feature_plan with exactly the human-approved FeatureEngineeringPlan from the
+    previous task, incorporating any edits the human made.
+  expected_output: >
+    Confirmation of the number of engineered features produced.
+  agent: feature_engineer
+  context:
+    - propose_feature_task
+
+model_selection_task:
+  description: >
+    Call train_candidate_models for run {run_id} and report the resulting leaderboard, sorted
+    best-first, with the cross-validation metric used.
+  expected_output: >
+    A complete Leaderboard of all candidate models with their CV scores.
+  agent: model_selector
+  context:
+    - execute_feature_task
+
+hpo_task:
+  description: >
+    Call tune_model_hyperparameters for the top model-selection leaderboard candidate(s) for
+    run {run_id}, then report the best hyperparameters and scores found.
+  expected_output: >
+    HpoResults for each tuned model.
+  agent: hpo_tuner
+  context:
+    - model_selection_task
+
+evaluation_task:
+  description: >
+    Call evaluate_models for run {run_id} on the tuned candidate(s). In your final answer,
+    also state in plain language which model you recommend and why, and explicitly call
+    out any leakage_suspicion flag, so a human reviewing your answer has what they need to
+    approve or reject it.
+  expected_output: >
+    A complete EvaluationBundle with metrics for every tuned model requested.
+  agent: evaluator
+  context:
+    - hpo_task
+
+finalize_task:
+  description: >
+    You MUST call finalize_run for run {run_id} exactly once as your final action in this
+    task, regardless of whether explicit human feedback is present -- never end this task
+    with only a question or a description of what you would do. Read the human's feedback
+    attached to the previous task and set approved to true only if that feedback is an
+    unambiguous approval; if it is missing, unclear, or absent entirely, call finalize_run
+    with approved=false. Pass the human's feedback text through to finalize_run unchanged
+    (empty string if there was none).
+  expected_output: >
+    Confirmation from finalize_run of whether the run was finalized as approved or rejected.
+  agent: evaluator
+  context:
+    - evaluation_task
