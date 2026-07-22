@@ -224,6 +224,16 @@ class ApplyCleaningPlanTool(BaseTool):
             return json.dumps(
                 {"error": f"Refusing to modify or drop the target column '{state.target}'."}
             )
+        conflicting = sorted({a.column for a in plan.actions} & set(plan.columns_to_drop))
+        if conflicting:
+            return json.dumps(
+                {
+                    "error": (
+                        f"Columns cannot be both cleaned and dropped in the same plan: "
+                        f"{conflicting}"
+                    )
+                }
+            )
         if state.task_type is None:
             return json.dumps({"error": "task_type is not set on the run; run EDA first."})
 
