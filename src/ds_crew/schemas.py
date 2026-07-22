@@ -144,6 +144,7 @@ class HpoResult(BaseModel):
 class HpoResults(BaseModel):
     run_id: str
     results: list[HpoResult]
+    warnings: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
