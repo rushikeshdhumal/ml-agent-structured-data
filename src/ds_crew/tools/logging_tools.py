@@ -29,9 +29,13 @@ happens last silently clobber the other.
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Any
 
-import mlflow
+import mlflow.catboost
+import mlflow.lightgbm
 import mlflow.sklearn
 from crewai.tools import BaseTool
 from mlflow.tracking import MlflowClient
@@ -39,6 +43,23 @@ from pydantic import BaseModel
 
 from ds_crew.schemas import FinalSignOff
 from ds_crew.state import get_data_store
+
+# Model-library-specific MLflow flavors preserve native serialization
+# robustness (CatBoost's own docs specifically recommend this over pickling)
+# and correct metadata. Not used for xgboost: mlflow.xgboost.save_model()
+# raises on model_tools.py's _XGBClassifierWithLabelEncoding (it isn't a
+# plain xgboost.sklearn estimator), and even for a plain XGBClassifier its
+# native format only captures the underlying booster, silently dropping any
+# extra Python-level state -- the generic sklearn/cloudpickle flavor below
+# preserves the whole object instead, which is what a custom subclass needs.
+_FLAVOR_BY_MODULE_PREFIX = {
+    "lightgbm": mlflow.lightgbm,
+    "catboost": mlflow.catboost,
+}
+
+
+def _flavor_for(model: Any):
+    return _FLAVOR_BY_MODULE_PREFIX.get(type(model).__module__.split(".")[0], mlflow.sklearn)
 
 
 def log_params(run_id: str | None, params: dict[str, Any]) -> None:
@@ -91,13 +112,26 @@ def log_stage_metrics(run_id: str | None, stage: str, metrics: dict[str, float])
 
 
 def log_model_artifact(run_id: str | None, model: Any, artifact_path: str = "model") -> None:
+    """Saves `model` locally via the flavor matching its library, then uploads
+    that directory as an artifact against run_id directly through
+    MlflowClient -- not the fluent mlflow.start_run()/log_model() API, which
+    has no run_id parameter and only knows how to log into whatever run is
+    "active" in the CURRENT thread. Re-entering the run via
+    `with mlflow.start_run(run_id=run_id):` would work for logging, but
+    exiting that block terminates the run (sets it FINISHED) immediately --
+    even though the crew's own outer run context in main.py is still open.
+    Going through MlflowClient sidesteps run-lifecycle state entirely.
+    """
     if not run_id:
         return
-    # mlflow.sklearn.log_model has no run_id parameter -- it only knows how to log
-    # into whatever run is "active" in the CURRENT thread. Re-entering the run by
-    # id makes it active here regardless of which thread this is.
-    with mlflow.start_run(run_id=run_id):
-        mlflow.sklearn.log_model(model, artifact_path)
+    flavor = _flavor_for(model)
+    tmp_dir = tempfile.mkdtemp(prefix="ds_crew_model_")
+    try:
+        model_path = str(Path(tmp_dir) / "model")
+        flavor.save_model(model, model_path)
+        MlflowClient().log_artifacts(run_id, model_path, artifact_path)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 class FinalizeRunTool(BaseTool):
@@ -115,6 +149,14 @@ class FinalizeRunTool(BaseTool):
         kwargs.setdefault("run_id", self.run_id)
         signoff = FinalSignOff(**kwargs)
         state = get_data_store().get(self.run_id)
+
+        if state.finalize_applied:
+            return json.dumps(
+                {
+                    "error": "finalize_run has already been called for this run. Do not call "
+                    "it again."
+                }
+            )
 
         if signoff.selected_model not in state.evaluation_reports:
             return json.dumps(
@@ -147,6 +189,7 @@ class FinalizeRunTool(BaseTool):
                 {"model_status": "rejected", "selected_model": signoff.selected_model},
             )
 
+        state.finalize_applied = True
         state.record(
             "finalize", "sign_off", {"approved": signoff.approved, "model": signoff.selected_model}
         )

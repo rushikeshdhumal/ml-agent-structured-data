@@ -1,10 +1,13 @@
-"""Deterministic feature engineering. Owns the train/test split.
+"""Deterministic feature engineering.
 
-The split lives here (not as a separate stage) because it is a correctness
-requirement, not an agent decision: target-mean/frequency encoders must be
-*fit* on the training fold only, or they leak target information into the
-engineered features. Model selection and HPO only ever see X_train; X_test
-is touched exactly once, in evaluation.
+The train/test split itself happens earlier, in cleaning_tools.py (so that
+cleaning statistics can also be fit on the training split only -- see that
+module's docstring). This module consumes the already-split, already-cleaned
+state.df_train/state.df_test and fits encoders/scalers on the training split
+only: target-mean/frequency encoders must be *fit* on the training fold only,
+or they leak target information into the engineered features. Model
+selection and HPO only ever see X_train; X_test is touched exactly once, in
+evaluation.
 """
 
 from __future__ import annotations
@@ -23,7 +26,6 @@ from sklearn.feature_selection import (
     mutual_info_classif,
     mutual_info_regression,
 )
-from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import (
     MinMaxScaler,
@@ -34,7 +36,6 @@ from sklearn.preprocessing import (
     TargetEncoder,
 )
 
-from ds_crew import settings
 from ds_crew.schemas import ColumnFeaturePlan, FeatureEngineeringPlan, TaskType
 from ds_crew.state import get_data_store
 from ds_crew.tools.logging_tools import log_params, log_plan_and_feedback
@@ -121,15 +122,6 @@ def build_transformer(plan: FeatureEngineeringPlan, X: pd.DataFrame) -> ColumnTr
     return ColumnTransformer(transformers=transformers, remainder="drop")
 
 
-def split_train_test(
-    df: pd.DataFrame, target: str, task_type: TaskType, test_size: float, random_state: int
-):
-    X = df.drop(columns=[target])
-    y = df[target]
-    stratify = y if task_type == "classification" else None
-    return train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=stratify)
-
-
 def select_features(
     X_train: np.ndarray,
     X_test: np.ndarray,
@@ -161,11 +153,11 @@ def select_features(
 class ApplyFeaturePlanTool(BaseTool):
     name: str = "apply_feature_plan"
     description: str = (
-        "MUTATES the run: performs the train/test split and builds the feature matrix per a "
-        "human-approved FeatureEngineeringPlan. Every non-target column must be explicitly "
-        "covered by column_plans or features_to_drop. Refuses to treat the target as a "
-        "feature. Irreversible for this run -- call EXACTLY ONCE with the complete "
-        "human-approved plan; a second call is refused."
+        "MUTATES the run: builds the feature matrix from the already-split, already-cleaned "
+        "train/test data per a human-approved FeatureEngineeringPlan. Every non-target column "
+        "must be explicitly covered by column_plans or features_to_drop. Refuses to treat the "
+        "target as a feature. Irreversible for this run -- call EXACTLY ONCE with the complete "
+        "human-approved plan; a second call is refused. Requires cleaning to have run first."
     )
     args_schema: type[BaseModel] = FeatureEngineeringPlan
     run_id: str = ""
@@ -183,7 +175,12 @@ class ApplyFeaturePlanTool(BaseTool):
                 }
             )
 
-        feature_cols = [c for c in state.df.columns if c != state.target]
+        if state.df_train is None or state.df_test is None:
+            return json.dumps(
+                {"error": "No train/test split found; run cleaning (apply_cleaning_plan) first."}
+            )
+
+        feature_cols = [c for c in state.df_train.columns if c != state.target]
         planned_cols = {cp.column for cp in plan.column_plans}
 
         if state.target in planned_cols:
@@ -207,9 +204,10 @@ class ApplyFeaturePlanTool(BaseTool):
         if state.task_type is None:
             return json.dumps({"error": "task_type is not set on the run; run EDA first."})
 
-        X_train_raw, X_test_raw, y_train, y_test = split_train_test(
-            state.df, state.target, state.task_type, state.test_size, random_state=settings.RANDOM_SEED
-        )
+        X_train_raw = state.df_train.drop(columns=[state.target])
+        y_train = state.df_train[state.target]
+        X_test_raw = state.df_test.drop(columns=[state.target])
+        y_test = state.df_test[state.target]
 
         try:
             transformer = build_transformer(plan, X_train_raw)

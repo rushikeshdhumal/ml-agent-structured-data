@@ -61,9 +61,9 @@ flowchart TD
     CSV["CSV + target column"]
     EDA["**eda_analyst**<br/>eda_task"]
     PC["**cleaning_strategist**<br/>propose_cleaning_task 👤"]
-    EC["**cleaning_strategist**<br/>execute_cleaning_task"]
+    EC["**cleaning_strategist**<br/>execute_cleaning_task<br/><sub>train/test split; stats fit on train only</sub>"]
     PF["**feature_engineer**<br/>propose_feature_task 👤 🛡️"]
-    EF["**feature_engineer**<br/>execute_feature_task<br/><sub>train/test split</sub>"]
+    EF["**feature_engineer**<br/>execute_feature_task"]
     MS["**model_selector**<br/>model_selection_task<br/><sub>CV leaderboard</sub>"]
     HPO["**hpo_tuner**<br/>hpo_task<br/><sub>Optuna, budget-capped</sub>"]
     EV["**evaluator**<br/>evaluation_task 👤<br/><sub>X_test touched once</sub>"]
@@ -118,12 +118,21 @@ Pydantic-validated tool. This is enforced in layers:
    code (`settings.MAX_HPO_TRIALS` / `MAX_HPO_TIMEOUT_S`), regardless of what
    an agent requests.
 
-**Human-in-the-loop.** Applying a cleaning plan, applying a
-feature-engineering plan (which also performs the train/test split), and
-accepting a final model are gated by CrewAI's native `human_input` Task
-flag: an agent first *proposes* a structured plan, a human reviews/edits it
-at the console, and only then does a separate *execute* task call the
-mutating tool with the approved plan.
+**Human-in-the-loop.** Applying a cleaning plan (which also performs the
+train/test split), applying a feature-engineering plan, and accepting a
+final model are gated by CrewAI's native `human_input` Task flag: an agent
+first *proposes* a structured plan, a human reviews/edits it at the console,
+and only then does a separate *execute* task call the mutating tool with the
+approved plan.
+
+**No test-set leakage.** The train/test split happens in cleaning, not
+feature engineering, specifically so that every cleaning statistic --
+imputation values, outlier bounds, KNN-imputer neighbors -- is fit on the
+training split only and applied identically to the test split (duplicate-row
+dropping is the one exception: it runs pre-split, so an identical row can
+never land in both halves). Encoders/scalers/feature-selectors in feature
+engineering are fit on the training split the same way. X_test is touched
+exactly once, in evaluation.
 
 **Metadata logging** (`tools/logging_tools.py`) is deterministic code, not
 an agent -- it's wired to fire automatically from inside each tool and from

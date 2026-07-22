@@ -58,7 +58,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--test-size",
         type=float,
         default=settings.DEFAULT_TEST_SIZE,
-        help="Held-out test fraction, used by feature engineering's train/test split.",
+        help="Held-out test fraction, used by cleaning's train/test split.",
     )
     return parser
 
@@ -69,6 +69,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.data.exists():
         parser.error(f"--data path does not exist: {args.data}")
+
+    if not 0.0 < args.test_size < 1.0:
+        parser.error(f"--test-size must be strictly between 0 and 1, got {args.test_size}")
 
     df = pd.read_csv(args.data)
     if args.target not in df.columns:
