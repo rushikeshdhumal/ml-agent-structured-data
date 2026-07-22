@@ -5,6 +5,13 @@ picks *which* leaderboard model(s) to tune, never the search space itself.
 Budget (n_trials/timeout_s) is capped in two layers: a Pydantic Field bound
 on the tool input, and a hard `min()` clamp in the tool body, so the agent
 cannot request more than the configured budget under any circumstance.
+
+Trial and model failures are isolated, mirroring model_tools.py's
+per-candidate leaderboard isolation: one bad hyperparameter draw (e.g. KNN's
+n_neighbors exceeding a fold's sample count) fails that trial only, and one
+model that exhausts its whole budget without a single successful trial is
+skipped (recorded in HpoResults.warnings) rather than aborting every other
+requested model in the same tune_model_hyperparameters call.
 """
 
 from __future__ import annotations
@@ -29,7 +36,7 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 HPO_CV_FOLDS = 3
 
 
-def _suggest_params(trial: optuna.Trial, model_name: str) -> dict:
+def _suggest_params(trial: optuna.Trial, model_name: str, n_fold_train_samples: int) -> dict:
     if model_name == "logistic_regression":
         return {"C": trial.suggest_float("C", 1e-3, 1e2, log=True)}
     if model_name == "ridge":
@@ -40,7 +47,11 @@ def _suggest_params(trial: optuna.Trial, model_name: str) -> dict:
             "l1_ratio": trial.suggest_float("l1_ratio", 0.0, 1.0),
         }
     if model_name == "knn":
-        return {"n_neighbors": trial.suggest_int("n_neighbors", 2, 30)}
+        # n_neighbors must be < the number of samples in each CV training fold, or
+        # every trial that draws too high a value fails outright -- bound the search
+        # space to what this dataset can actually support instead of wasting budget.
+        max_k = max(2, min(30, n_fold_train_samples - 1))
+        return {"n_neighbors": trial.suggest_int("n_neighbors", 2, max_k)}
     if model_name == "xgboost":
         return {
             "n_estimators": trial.suggest_int("n_estimators", 50, 500),
@@ -83,9 +94,10 @@ def run_optuna_study(
         cv = StratifiedKFold(n_splits=HPO_CV_FOLDS, shuffle=True, random_state=seed)
     else:
         cv = KFold(n_splits=HPO_CV_FOLDS, shuffle=True, random_state=seed)
+    n_fold_train_samples = len(X_train) * (HPO_CV_FOLDS - 1) // HPO_CV_FOLDS
 
     def objective(trial: optuna.Trial) -> float:
-        params = _suggest_params(trial, model_name)
+        params = _suggest_params(trial, model_name, n_fold_train_samples)
         model = cls(**{**base_kwargs, **params})
         scores = cross_val_score(model, X_train, y_train, cv=cv, scoring=metric)
         return float(np.mean(scores))
@@ -93,7 +105,18 @@ def run_optuna_study(
     study = optuna.create_study(
         direction="maximize", sampler=optuna.samplers.TPESampler(seed=seed)
     )
-    study.optimize(objective, n_trials=n_trials, timeout=timeout_s)
+    # catch=(Exception,) means one bad hyperparameter draw (a Optuna-suggested
+    # combination that raises during fit/score) fails only that trial -- it's
+    # recorded as a FAILed trial and the study moves on, instead of the whole
+    # study aborting and losing every trial completed so far.
+    study.optimize(objective, n_trials=n_trials, timeout=timeout_s, catch=(Exception,))
+
+    completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    if not completed:
+        raise RuntimeError(
+            f"all {len(study.trials)} trials failed -- the search space may not be viable "
+            "for this dataset size"
+        )
 
     return HpoResult(
         model_name=model_name,
@@ -144,24 +167,36 @@ class TuneModelsTool(BaseTool):
         timeout_s = min(timeout_s, settings.MAX_HPO_TIMEOUT_S)
 
         results: list[HpoResult] = []
+        warnings: list[str] = []
         for name in model_names:
-            result = run_optuna_study(
-                state.X_train,
-                state.y_train,
-                name,
-                state.task_type,
-                n_trials,
-                timeout_s,
-                seed=settings.RANDOM_SEED,
-            )
+            try:
+                result = run_optuna_study(
+                    state.X_train,
+                    state.y_train,
+                    name,
+                    state.task_type,
+                    n_trials,
+                    timeout_s,
+                    seed=settings.RANDOM_SEED,
+                )
+            except Exception as exc:  # noqa: BLE001 -- isolate one bad model, not the whole batch
+                warnings.append(f"{name}: skipped after raising {type(exc).__name__}: {exc}")
+                continue
             state.hpo_results[name] = result
             results.append(result)
             log_json_artifact(state.mlflow_run_id, result, f"hpo/{name}_best_params.json")
 
-        state.record("hpo", "studies_complete", {"models": model_names, "n_trials": n_trials})
+        if not results:
+            return json.dumps({"error": f"All requested models failed HPO: {'; '.join(warnings)}"})
+
+        state.record(
+            "hpo",
+            "studies_complete",
+            {"models": [r.model_name for r in results], "n_trials": n_trials},
+        )
         log_stage_metrics(
             state.mlflow_run_id,
             "hpo",
             {f"{r.model_name}_best_score": r.best_score for r in results},
         )
-        return HpoResults(run_id=self.run_id, results=results).model_dump_json()
+        return HpoResults(run_id=self.run_id, results=results, warnings=warnings).model_dump_json()
