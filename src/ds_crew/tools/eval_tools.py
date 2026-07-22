@@ -106,13 +106,21 @@ class EvaluateModelsTool(BaseTool):
         "Fits each named model (using tuned hyperparameters from HPO if available, else "
         "defaults) on X_train and scores it ONCE on the held-out X_test. Flags "
         "leakage_suspicion when a metric looks too good to be true. model_names must be "
-        "leaderboard candidates."
+        "leaderboard candidates. Call EXACTLY ONCE for this run -- the held-out test set is "
+        "only meaningful if it's scored a single time; a second call is refused."
     )
     args_schema: type[BaseModel] = EvaluateModelsInput
     run_id: str = ""
 
     def _run(self, model_names: list[str]) -> str:
         state = get_data_store().get(self.run_id)
+        if state.evaluation_applied:
+            return json.dumps(
+                {
+                    "error": "evaluate_models has already been called for this run. Do not "
+                    "call it again -- proceed to the next task with the existing results."
+                }
+            )
         if state.X_test is None or state.leaderboard is None:
             return json.dumps(
                 {
@@ -152,5 +160,6 @@ class EvaluateModelsTool(BaseTool):
             if report.leakage_suspicion:
                 log_tags(state.mlflow_run_id, {f"{name}_leakage_suspicion": "true"})
 
+        state.evaluation_applied = True
         state.record("evaluation", "scored", {"models": model_names})
         return EvaluationBundle(run_id=self.run_id, reports=reports).model_dump_json()
