@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from _helpers import prepare_features
 
+import ds_crew.tools.eval_tools as eval_tools_module
 from ds_crew.tools.eval_tools import EvaluateModelsTool
 from ds_crew.tools.model_tools import TrainCandidateModelsTool
 
@@ -73,3 +75,29 @@ def test_evaluate_models_tool_refuses_second_call(classification_run, run_id, cl
     second = json.loads(tool._run(model_names=[best_name]))
     assert "error" in second
     assert "already been called" in second["error"]
+
+
+def test_evaluate_models_tool_sets_applied_flag_before_scoring_starts(
+    classification_run, run_id, classification_df, monkeypatch
+):
+    # evaluation_applied must be set before the scoring loop runs, not after
+    # it completes -- otherwise a mid-batch failure (X_test already used for
+    # whichever models ran before the failing one) would leave the flag
+    # False, and a "retry" would be allowed to touch X_test again.
+    _prepare_run(run_id, classification_df, "target")
+    names = [c.model_name for c in classification_run.leaderboard.candidates[:2]]
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated failure mid-batch")
+
+    monkeypatch.setattr(eval_tools_module, "evaluate_candidate", _boom)
+
+    tool = EvaluateModelsTool(run_id=run_id)
+    with pytest.raises(RuntimeError):
+        tool._run(model_names=names)
+
+    assert classification_run.evaluation_applied is True
+
+    retry = json.loads(tool._run(model_names=names))
+    assert "error" in retry
+    assert "already been called" in retry["error"]

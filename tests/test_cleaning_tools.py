@@ -143,6 +143,25 @@ def test_apply_cleaning_plan_tool_applies_split_and_mutates_state(classification
     assert classification_run.history[-1]["stage"] == "cleaning"
 
 
+def test_apply_cleaning_plan_tool_rejects_column_both_cleaned_and_dropped(
+    classification_run, run_id
+):
+    # apply_structural_cleaning drops columns_to_drop before fit_transform_cleaning
+    # runs the per-column actions -- without this check, a plan naming the same
+    # column in both would pass validation and then hit a KeyError once cleaning
+    # tries to access a column that's already gone.
+    tool = ApplyCleaningPlanTool(run_id=run_id)
+    result = json.loads(
+        tool._run(
+            actions=[{"column": "with_nulls", "missing_strategy": "mean"}],
+            columns_to_drop=["with_nulls"],
+        )
+    )
+    assert "error" in result
+    assert "with_nulls" in result["error"]
+    assert classification_run.cleaning_applied is False
+
+
 def test_apply_cleaning_plan_tool_refuses_second_call(classification_run, run_id):
     # Some models fragment one large structured tool call into several partial
     # invocations; since every CleaningPlan field has a default, a second call
