@@ -41,6 +41,18 @@ class RunState:
     # let the execute-stage tools refuse a second application outright.
     cleaning_applied: bool = False
     features_applied: bool = False
+    evaluation_applied: bool = False
+    finalize_applied: bool = False
+
+    # Row-level train/test split of the (structurally cleaned) dataset, target
+    # column still included -- produced by ApplyCleaningPlanTool, which fits
+    # every cleaning statistic (imputation values, outlier bounds, KNN
+    # neighbors) on df_train only and applies the identical fitted transform
+    # to df_test, so no test-row value ever influences a train-row's cleaned
+    # value. `df` itself is never mutated by cleaning; it stays the original
+    # raw dataset for EDA/reference.
+    df_train: pd.DataFrame | None = None
+    df_test: pd.DataFrame | None = None
 
     X_train: pd.DataFrame | None = None
     X_test: pd.DataFrame | None = None
@@ -55,7 +67,6 @@ class RunState:
     evaluation_reports: dict[str, EvaluationReport] = field(default_factory=dict)
 
     history: list[dict[str, Any]] = field(default_factory=list)
-    lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     artifacts_dir: Path = field(init=False)
 
     def __post_init__(self) -> None:
