@@ -136,6 +136,14 @@ class EvaluateModelsTool(BaseTool):
                 {"error": f"{invalid} not in leaderboard candidates: {sorted(allowed)}"}
             )
 
+        # Set before touching X_test, not after the loop completes: if
+        # evaluate_candidate raises partway through model_names, X_test has
+        # already been used for whichever models ran first. Leaving the flag
+        # unset until a clean finish would let a retry after a partial
+        # failure touch X_test again, breaking "touched exactly once" even
+        # though the original call never fully succeeded.
+        state.evaluation_applied = True
+
         reports = []
         for name in model_names:
             params = state.hpo_results[name].best_params if name in state.hpo_results else {}
@@ -160,6 +168,5 @@ class EvaluateModelsTool(BaseTool):
             if report.leakage_suspicion:
                 log_tags(state.mlflow_run_id, {f"{name}_leakage_suspicion": "true"})
 
-        state.evaluation_applied = True
         state.record("evaluation", "scored", {"models": model_names})
         return EvaluationBundle(run_id=self.run_id, reports=reports).model_dump_json()
