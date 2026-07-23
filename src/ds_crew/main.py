@@ -19,6 +19,7 @@ from ds_crew import settings
 from ds_crew.crew import DsCrew
 from ds_crew.state import get_data_store
 from ds_crew.tools.eda_tools import infer_task_type
+from ds_crew.tools.model_tools import ALLOWED_METRICS, METRIC_BY_TASK
 
 # Windows' default stdout/stderr encoding for a non-console-attached process
 # (e.g. output redirected to a file/pipe) is often cp1252 ("charmap"), which
@@ -60,6 +61,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=settings.DEFAULT_TEST_SIZE,
         help="Held-out test fraction, used by cleaning's train/test split.",
     )
+    parser.add_argument(
+        "--metric",
+        default=None,
+        help=(
+            "Optimization metric driving cross-validation, HPO, ensembling, and evaluation. "
+            "Defaults to a task-appropriate metric; validated against the allowed set for "
+            "the resolved task type. In an interactive run, the metric-selection gate lets a "
+            "human override this before model selection regardless of what's passed here."
+        ),
+    )
     return parser
 
 
@@ -78,11 +89,22 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"--target '{args.target}' not found in columns: {list(df.columns)}")
 
     task_type = args.task if args.task != "auto" else infer_task_type(df[args.target])
+
+    if args.metric and args.metric not in ALLOWED_METRICS[task_type]:
+        parser.error(
+            f"--metric '{args.metric}' not allowed for task type '{task_type}': "
+            f"{sorted(ALLOWED_METRICS[task_type])}"
+        )
+
     run_id = uuid.uuid4().hex[:12]
 
     state = get_data_store().create_run(run_id, df, target=args.target)
     state.task_type = task_type
     state.test_size = args.test_size
+    # The metric-selection gate (propose_metric_task/set_metric_task) can
+    # still override this before model selection runs in an interactive run;
+    # this just seeds a sensible starting point for headless/AUTO_APPROVE runs.
+    state.metric_name = args.metric or METRIC_BY_TASK[task_type]
 
     mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
     mlflow.set_experiment(settings.MLFLOW_EXPERIMENT_NAME)

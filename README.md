@@ -52,7 +52,7 @@ uv run pytest -m e2e tests/e2e   # full pipeline, requires a live LLM key
 
 ## Architecture
 
-Six agents run a fixed nine-task pipeline. Every task that touches the
+Seven agents run a fixed twelve-task pipeline. Every task that touches the
 dataset delegates to a deterministic tool -- the agent proposes, code
 executes:
 
@@ -64,37 +64,43 @@ flowchart TD
     EC["**cleaning_strategist**<br/>execute_cleaning_task<br/><sub>train/test split; stats fit on train only</sub>"]
     PF["**feature_engineer**<br/>propose_feature_task 👤 🛡️"]
     EF["**feature_engineer**<br/>execute_feature_task"]
+    PM["**model_selector**<br/>propose_metric_task 👤 🛡️"]
+    SM["**model_selector**<br/>set_metric_task"]
     MS["**model_selector**<br/>model_selection_task<br/><sub>CV leaderboard</sub>"]
     HPO["**hpo_tuner**<br/>hpo_task<br/><sub>Optuna, budget-capped</sub>"]
+    ENS["**ensembler**<br/>ensembling_task<br/><sub>voting/stacking/greedy, metric-optimized</sub>"]
     EV["**evaluator**<br/>evaluation_task 👤<br/><sub>X_test touched once</sub>"]
     FIN["**evaluator**<br/>finalize_task<br/><sub>sign-off</sub>"]
 
-    CSV --> EDA --> PC --> EC --> PF --> EF --> MS --> HPO --> EV --> FIN
+    CSV --> EDA --> PC --> EC --> PF --> EF --> PM --> SM --> MS --> HPO --> ENS --> EV --> FIN
 
     subgraph Tools["Deterministic tools (pandas / scikit-learn / Optuna)"]
         T1[[cleaning_tools]]
         T2[[feature_tools]]
         T3[[model_tools]]
         T4[[hpo_tools]]
+        T7[[ensemble_tools]]
         T5[[eval_tools]]
         T6[[logging_tools]]
     end
 
     EC -.-> T1
     EF -.-> T2
+    SM -.-> T3
     MS -.-> T3
     HPO -.-> T4
+    ENS -.-> T7
     EV -.-> T5
     FIN -.-> T6
 
     DS[("DataStore<br/><sub>per-run DataFrames --<br/>never enters LLM context</sub>")]
     MLF[("MLflow<br/><sub>sqlite:///mlflow.db</sub>")]
 
-    T1 & T2 & T3 & T4 & T5 --> DS
-    T1 & T2 & T3 & T4 & T5 & T6 --> MLF
+    T1 & T2 & T3 & T4 & T7 & T5 --> DS
+    T1 & T2 & T3 & T4 & T7 & T5 & T6 --> MLF
 
     classDef gate fill:#fff3cd,stroke:#b38600
-    class PC,PF,EV gate
+    class PC,PF,PM,EV gate
 ```
 
 👤 = human-in-the-loop gate &nbsp;&nbsp; 🛡️ = task guardrail
@@ -155,6 +161,36 @@ entries move on to HPO (`hpo_tools.py`, Optuna, one fixed search space per
 model) and evaluation. A failing candidate is skipped and recorded in
 `Leaderboard.warnings` rather than crashing the whole leaderboard.
 
+### Optimization metric
+
+Before model selection, a human-gated `propose_metric_task`/`set_metric_task`
+pair (`model_selector` agent) picks the metric that cross-validation, HPO,
+ensembling, and evaluation all optimize against -- never hard-coded accuracy.
+Allowed metrics (`model_tools.ALLOWED_METRICS`) are bounded, higher-is-better:
+
+| Task | Allowed metrics |
+|---|---|
+| Classification | `f1_macro` (default), `accuracy`, `precision_macro`, `recall_macro`, `balanced_accuracy`, `roc_auc` |
+| Regression | `r2` (default) |
+
+The chosen metric is stored once on `RunState.metric_name` and threaded
+through every downstream tool; `Leaderboard.metric_name` is the ground-truth
+record of what a run's CV scores actually measure.
+
+### Ensembling
+
+After HPO, `ensemble_tools.py`'s `build_ensemble` (the `ensembler` agent)
+combines the strongest leaderboard/HPO candidates (up to
+`MAX_ENSEMBLE_MEMBERS`, default 5) into a single model -- soft voting,
+weighted voting, greedy (Caruana 2004) selection, and stacking are all
+cross-validated against the run's chosen metric, and whichever wins is kept.
+Out-of-fold member predictions are computed once and reused across every
+strategy, so weight/greedy search is cheap. The result is registered as an
+extra `"ensemble"` leaderboard candidate, fit on `X_train` only, so it is
+scored by the same single-pass `evaluate_models` call as the tuned single
+models -- preserving the "X_test touched exactly once" invariant -- and is
+eligible for human sign-off at finalize like any other candidate.
+
 ## Project layout
 
 ```
@@ -172,8 +208,9 @@ src/ds_crew/
     eda_tools.py       Read-only profiling
     cleaning_tools.py  Missing-value/outlier/dtype cleaning
     feature_tools.py   Train/test split, encoding, scaling, feature selection
-    model_tools.py     Candidate model registry + cross-validation
+    model_tools.py     Candidate model registry, metric selection, cross-validation
     hpo_tools.py       Optuna hyperparameter search
+    ensemble_tools.py  Metric-optimized voting/stacking/greedy ensembling
     eval_tools.py      Held-out evaluation
     logging_tools.py   MLflow helpers + the finalize_run tool
 tests/              Unit tests for every tool/guardrail/schema (no LLM calls)
@@ -190,7 +227,8 @@ tests/e2e/          Full pipeline test; requires a live LLM key, opt-in via `-m 
   (e.g. NVIDIA NIM). `MAX_RPM` caps aggregate LLM calls/minute across the crew.
 - **MLflow** -- `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_NAME`.
 - **Guardrails/budgets** -- `AUTO_APPROVE`, `MAX_HPO_TRIALS`,
-  `MAX_HPO_TIMEOUT_S`, `NEAR_PERFECT_THRESHOLD`, `RANDOM_SEED`.
+  `MAX_HPO_TIMEOUT_S`, `NEAR_PERFECT_THRESHOLD`, `RANDOM_SEED`,
+  `MAX_ENSEMBLE_MEMBERS`, `ENSEMBLE_WEIGHT_TRIALS`, `MIN_ENSEMBLE_IMPROVEMENT`.
 
 ## License
 

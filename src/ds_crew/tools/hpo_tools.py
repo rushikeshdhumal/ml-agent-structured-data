@@ -23,13 +23,19 @@ import optuna
 import pandas as pd
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
-from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score
+from sklearn.model_selection import cross_val_score
 
 from ds_crew import settings
 from ds_crew.schemas import HpoResult, HpoResults, TaskType
 from ds_crew.state import get_data_store
 from ds_crew.tools.logging_tools import log_json_artifact, log_stage_metrics
-from ds_crew.tools.model_tools import BASE_MODEL_KWARGS, CANDIDATE_MODELS, METRIC_BY_TASK
+from ds_crew.tools.model_tools import (
+    BASE_MODEL_KWARGS,
+    CANDIDATE_MODELS,
+    METRIC_BY_TASK,
+    make_cv_splitter,
+    resolve_cv_scorer,
+)
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -86,20 +92,19 @@ def run_optuna_study(
     n_trials: int,
     timeout_s: int,
     seed: int,
+    metric: str | None = None,
 ) -> HpoResult:
     cls = CANDIDATE_MODELS[task_type][model_name]
-    metric = METRIC_BY_TASK[task_type]
+    metric = metric or METRIC_BY_TASK[task_type]
+    scorer = resolve_cv_scorer(metric, y_train)
     base_kwargs = BASE_MODEL_KWARGS.get(model_name, {})
-    if task_type == "classification":
-        cv = StratifiedKFold(n_splits=HPO_CV_FOLDS, shuffle=True, random_state=seed)
-    else:
-        cv = KFold(n_splits=HPO_CV_FOLDS, shuffle=True, random_state=seed)
+    cv = make_cv_splitter(task_type, HPO_CV_FOLDS, seed)
     n_fold_train_samples = len(X_train) * (HPO_CV_FOLDS - 1) // HPO_CV_FOLDS
 
     def objective(trial: optuna.Trial) -> float:
         params = _suggest_params(trial, model_name, n_fold_train_samples)
         model = cls(**{**base_kwargs, **params})
-        scores = cross_val_score(model, X_train, y_train, cv=cv, scoring=metric)
+        scores = cross_val_score(model, X_train, y_train, cv=cv, scoring=scorer)
         return float(np.mean(scores))
 
     study = optuna.create_study(
@@ -178,6 +183,7 @@ class TuneModelsTool(BaseTool):
                     n_trials,
                     timeout_s,
                     seed=settings.RANDOM_SEED,
+                    metric=state.metric_name,
                 )
             except Exception as exc:  # noqa: BLE001 -- isolate one bad model, not the whole batch
                 warnings.append(f"{name}: skipped after raising {type(exc).__name__}: {exc}")

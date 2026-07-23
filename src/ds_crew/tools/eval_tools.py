@@ -10,6 +10,7 @@ from crewai.tools import BaseTool
 from pydantic import BaseModel
 from sklearn.metrics import (
     accuracy_score,
+    balanced_accuracy_score,
     confusion_matrix,
     f1_score,
     mean_absolute_error,
@@ -17,13 +18,14 @@ from sklearn.metrics import (
     precision_score,
     r2_score,
     recall_score,
+    roc_auc_score,
 )
 
 from ds_crew import settings
 from ds_crew.schemas import EvaluationBundle, EvaluationReport, TaskType
 from ds_crew.state import get_data_store
 from ds_crew.tools.logging_tools import log_json_artifact, log_metrics, log_tags
-from ds_crew.tools.model_tools import BASE_MODEL_KWARGS, CANDIDATE_MODELS
+from ds_crew.tools.model_tools import BASE_MODEL_KWARGS, CANDIDATE_MODELS, METRIC_BY_TASK
 
 
 def evaluate_candidate(
@@ -36,11 +38,21 @@ def evaluate_candidate(
     task_type: TaskType,
     feature_names: list[str] | None,
     near_perfect_threshold: float,
+    metric: str | None = None,
+    prefitted_model: object | None = None,
 ) -> tuple[EvaluationReport, object]:
-    cls = CANDIDATE_MODELS[task_type][model_name]
-    base_kwargs = BASE_MODEL_KWARGS.get(model_name, {})
-    model = cls(**{**base_kwargs, **params})
-    model.fit(X_train, y_train)
+    metric = metric or METRIC_BY_TASK[task_type]
+    if prefitted_model is not None:
+        # An ensemble (or any other pre-built estimator) fitted on this same
+        # X_train elsewhere -- e.g. EnsembleModelsTool -- is scored here
+        # without a second fit, so it still only ever touches X_test through
+        # this one function, preserving "X_test touched exactly once".
+        model = prefitted_model
+    else:
+        cls = CANDIDATE_MODELS[task_type][model_name]
+        base_kwargs = BASE_MODEL_KWARGS.get(model_name, {})
+        model = cls(**{**base_kwargs, **params})
+        model.fit(X_train, y_train)
     preds = model.predict(X_test)
 
     metrics: dict[str, float] = {}
@@ -54,13 +66,43 @@ def evaluate_candidate(
         metrics["recall_macro"] = round(
             float(recall_score(y_test, preds, average="macro", zero_division=0)), 4
         )
+        metrics["balanced_accuracy"] = round(float(balanced_accuracy_score(y_test, preds)), 4)
         confusion = confusion_matrix(y_test, preds).tolist()
-        primary_metric = metrics["f1_macro"]
+
+        # roc_auc needs predict_proba; not every estimator (or every fold's
+        # label distribution) supports it, so this is best-effort -- absent
+        # from the bundle rather than a hard failure if it can't be computed.
+        # Column order is derived from y_train (sorted(unique(y_train))), NOT
+        # model.classes_: _XGBClassifierWithLabelEncoding's classes_ reflects
+        # the internal integer encoding XGBoost's sklearn API requires at fit
+        # time (see model_tools.py), not the original label space -- but its
+        # predict_proba columns still follow sorted(unique(y_train)) order,
+        # same as every other classifier here, since that's the exact
+        # encoding its internal LabelEncoder applied.
+        predict_proba = getattr(model, "predict_proba", None)
+        if predict_proba is not None:
+            try:
+                proba = predict_proba(X_test)
+                classes_ = np.unique(y_train)
+                if proba.shape[1] == 2:
+                    y_true_binary = (np.asarray(y_test) == classes_[1]).astype(int)
+                    metrics["roc_auc"] = round(
+                        float(roc_auc_score(y_true_binary, proba[:, 1])), 4
+                    )
+                else:
+                    metrics["roc_auc"] = round(
+                        float(roc_auc_score(y_test, proba, multi_class="ovr", labels=classes_)),
+                        4,
+                    )
+            except ValueError:
+                pass
+
+        primary_metric = metrics.get(metric, metrics["f1_macro"])
     else:
         metrics["r2"] = round(float(r2_score(y_test, preds)), 4)
         metrics["mae"] = round(float(mean_absolute_error(y_test, preds)), 4)
         metrics["rmse"] = round(float(np.sqrt(mean_squared_error(y_test, preds))), 4)
-        primary_metric = metrics["r2"]
+        primary_metric = metrics.get(metric, metrics["r2"])
 
     feature_importances = None
     if feature_names:
@@ -144,9 +186,24 @@ class EvaluateModelsTool(BaseTool):
         # though the original call never fully succeeded.
         state.evaluation_applied = True
 
+        # state.leaderboard.metric_name (not state.metric_name, which may
+        # still be None if the metric-selection gate was never invoked) is
+        # the ground truth for what metric these candidates were actually
+        # cross-validated on -- run_cross_validation always resolves and
+        # stamps a concrete metric string, even when called with metric=None.
+        metric = state.leaderboard.metric_name
         reports = []
         for name in model_names:
-            params = state.hpo_results[name].best_params if name in state.hpo_results else {}
+            if name in CANDIDATE_MODELS[state.task_type]:
+                params = state.hpo_results[name].best_params if name in state.hpo_results else {}
+                prefitted = None
+            else:
+                # Not a registry model name (e.g. "ensemble" from
+                # EnsembleModelsTool) -- it must already be fit on X_train
+                # and stored in state.fitted_models; score it as-is instead
+                # of trying to construct it from CANDIDATE_MODELS.
+                params = {}
+                prefitted = state.fitted_models[name]
             report, fitted = evaluate_candidate(
                 state.X_train,
                 state.X_test,
@@ -157,6 +214,8 @@ class EvaluateModelsTool(BaseTool):
                 state.task_type,
                 state.feature_names,
                 settings.NEAR_PERFECT_THRESHOLD,
+                metric=metric,
+                prefitted_model=prefitted,
             )
             state.fitted_models[name] = fitted
             state.evaluation_reports[name] = report

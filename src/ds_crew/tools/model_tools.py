@@ -21,7 +21,7 @@ from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier, XGBRegressor
 
 from ds_crew import settings
-from ds_crew.schemas import Leaderboard, ModelCandidateResult, TaskType
+from ds_crew.schemas import Leaderboard, MetricChoice, ModelCandidateResult, TaskType
 from ds_crew.state import get_data_store
 from ds_crew.tools.logging_tools import log_params, log_stage_metrics
 
@@ -68,6 +68,25 @@ CANDIDATE_MODELS: dict[TaskType, dict[str, type]] = {
 
 METRIC_BY_TASK: dict[TaskType, str] = {"classification": "f1_macro", "regression": "r2"}
 
+# The metrics a human may choose (via SetMetricTool) to drive cross-validation,
+# HPO, ensembling, and evaluation instead of the METRIC_BY_TASK default.
+# Deliberately restricted to bounded, higher-is-better metrics: HPO's Optuna
+# studies hardcode direction="maximize", and the near-perfect-leakage heuristic
+# in eval_tools.py checks `primary_metric >= NEAR_PERFECT_THRESHOLD` -- an
+# error metric like MAE/RMSE (lower-is-better, unbounded) would silently break
+# both without extra special-casing, so regression intentionally offers only r2.
+ALLOWED_METRICS: dict[TaskType, set[str]] = {
+    "classification": {
+        "f1_macro",
+        "accuracy",
+        "precision_macro",
+        "recall_macro",
+        "balanced_accuracy",
+        "roc_auc",
+    },
+    "regression": {"r2"},
+}
+
 BASE_MODEL_KWARGS: dict[str, dict] = {
     "logistic_regression": {"max_iter": 1000, "random_state": settings.RANDOM_SEED},
     "knn": {"n_jobs": -1},
@@ -84,22 +103,40 @@ BASE_MODEL_KWARGS: dict[str, dict] = {
 }
 
 
+def make_cv_splitter(task_type: TaskType, n_splits: int, seed: int):
+    if task_type == "classification":
+        return StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    return KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+
+
+def resolve_cv_scorer(metric: str, y: pd.Series) -> str:
+    """Most allowed metric names are already valid sklearn `scoring=` strings.
+    roc_auc is the one exception: sklearn requires "roc_auc_ovr" (not
+    "roc_auc") once there are more than two classes.
+    """
+    if metric == "roc_auc" and len(set(y)) > 2:
+        return "roc_auc_ovr"
+    return metric
+
+
 def run_cross_validation(
-    X_train: np.ndarray, y_train: pd.Series, task_type: TaskType, cv_folds: int = 5
+    X_train: np.ndarray,
+    y_train: pd.Series,
+    task_type: TaskType,
+    cv_folds: int = 5,
+    metric: str | None = None,
 ) -> Leaderboard:
     candidates = CANDIDATE_MODELS[task_type]
-    metric = METRIC_BY_TASK[task_type]
-    if task_type == "classification":
-        cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=settings.RANDOM_SEED)
-    else:
-        cv = KFold(n_splits=cv_folds, shuffle=True, random_state=settings.RANDOM_SEED)
+    metric = metric or METRIC_BY_TASK[task_type]
+    scorer = resolve_cv_scorer(metric, y_train)
+    cv = make_cv_splitter(task_type, cv_folds, settings.RANDOM_SEED)
 
     results: list[ModelCandidateResult] = []
     warnings: list[str] = []
     for name, cls in candidates.items():
         try:
             model = cls(**BASE_MODEL_KWARGS.get(name, {}))
-            scores = cross_validate(model, X_train, y_train, cv=cv, scoring=metric)
+            scores = cross_validate(model, X_train, y_train, cv=cv, scoring=scorer)
         except Exception as exc:  # noqa: BLE001 -- isolate one bad candidate, not the whole leaderboard
             warnings.append(f"{name}: skipped after raising {type(exc).__name__}: {exc}")
             continue
@@ -139,7 +176,11 @@ class TrainCandidateModelsTool(BaseTool):
             return json.dumps({"error": "No feature matrix found; run feature engineering first."})
         try:
             leaderboard = run_cross_validation(
-                state.X_train, state.y_train, state.task_type, cv_folds
+                state.X_train,
+                state.y_train,
+                state.task_type,
+                cv_folds,
+                metric=state.metric_name,
             )
         except RuntimeError as exc:
             return json.dumps({"error": str(exc)})
@@ -155,3 +196,37 @@ class TrainCandidateModelsTool(BaseTool):
             {c.model_name: c.cv_mean_score for c in leaderboard.candidates},
         )
         return leaderboard.model_dump_json()
+
+
+class SetMetricTool(BaseTool):
+    name: str = "set_evaluation_metric"
+    description: str = (
+        "Records the human-approved optimization metric for this run. This metric drives "
+        "cross-validation, hyperparameter tuning, ensembling, and evaluation for every "
+        "later stage. Must be one of the metrics allowed for the run's task type. Call "
+        "only after a human has reviewed the proposed metric."
+    )
+    args_schema: type[BaseModel] = MetricChoice
+    run_id: str = ""
+
+def _run(self, **kwargs) -> str:
+    kwargs.setdefault("run_id", self.run_id)
+    choice = MetricChoice(**kwargs)
+    if self.run_id and choice.run_id != self.run_id:
+        return json.dumps({"error": f"run_id mismatch: tool bound to '{self.run_id}' but got '{choice.run_id}'"})
+    state = get_data_store().get(choice.run_id)
+        allowed = ALLOWED_METRICS[state.task_type]
+        if choice.metric not in allowed:
+            return json.dumps(
+                {
+                    "error": (
+                        f"'{choice.metric}' is not allowed for task type "
+                        f"'{state.task_type}': {sorted(allowed)}"
+                    )
+                }
+            )
+
+        state.metric_name = choice.metric
+        state.record("model_selection", "metric_set", {"metric": choice.metric})
+        log_params(state.mlflow_run_id, {"evaluation_metric": choice.metric})
+        return json.dumps({"status": "set", "metric": choice.metric})

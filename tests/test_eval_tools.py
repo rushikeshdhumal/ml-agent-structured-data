@@ -34,7 +34,9 @@ def test_evaluate_models_tool_classification_metrics(classification_run, run_id,
     tool = EvaluateModelsTool(run_id=run_id)
     result = json.loads(tool._run(model_names=[best_name]))
     report = result["reports"][0]
-    assert set(report["metrics"]) == {"accuracy", "f1_macro", "precision_macro", "recall_macro"}
+    assert {"accuracy", "f1_macro", "precision_macro", "recall_macro", "balanced_accuracy"} <= set(
+        report["metrics"]
+    )
     assert report["confusion_matrix"] is not None
     assert classification_run.fitted_models[best_name] is not None
     assert classification_run.history[-1]["stage"] == "evaluation"

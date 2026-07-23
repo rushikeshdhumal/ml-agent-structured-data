@@ -20,8 +20,9 @@ structured `approved: bool` field (see `schemas.FinalSignOff`) that
 
 from typing import Any, Tuple
 
-from ds_crew.schemas import CleaningPlan, FeatureEngineeringPlan
+from ds_crew.schemas import CleaningPlan, FeatureEngineeringPlan, MetricChoice
 from ds_crew.state import get_data_store
+from ds_crew.tools.model_tools import ALLOWED_METRICS
 
 
 def prevent_target_leakage_guardrail(output: Any) -> Tuple[bool, Any]:
@@ -60,6 +61,31 @@ def prevent_target_modification_guardrail(output: Any) -> Tuple[bool, Any]:
             "Remove it and resubmit."
         )
     return True, plan
+
+
+def validate_metric_choice_guardrail(output: Any) -> Tuple[bool, Any]:
+    """Attached to propose_metric_task: refuses a metric outside the allowed
+    set for the run's task type. This is a structural check only -- like
+    every other guardrail here, it doesn't encode a human's actual choice
+    (that happens via human_input editing the proposal before set_metric_task
+    calls set_evaluation_metric, which independently re-validates the same
+    rule as its own trust boundary).
+    """
+    choice = output.pydantic
+    if choice is None or not isinstance(choice, MetricChoice):
+        return False, "Expected a MetricChoice; structured output missing or malformed."
+    try:
+        state = get_data_store().get(choice.run_id)
+    except KeyError as exc:
+        return False, str(exc)
+
+    allowed = ALLOWED_METRICS[state.task_type]
+    if choice.metric not in allowed:
+        return False, (
+            f"'{choice.metric}' is not an allowed metric for task type '{state.task_type}'. "
+            f"Choose one of: {sorted(allowed)}."
+        )
+    return True, choice
 
 
 def make_finalize_called_guardrail(run_id: str):
