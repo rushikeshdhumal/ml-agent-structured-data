@@ -51,6 +51,30 @@ execute_feature_task:
   context:
     - propose_feature_task
 
+propose_metric_task:
+  description: >
+    Using the EDA report as context for run {run_id}, propose the optimization metric that
+    every later stage (model selection, hyperparameter tuning, ensembling, and evaluation)
+    should be scored and optimized against. Choose from the metrics allowed for this task's
+    type, defaulting to the system default unless the EDA report gives a clear reason to
+    prefer another (e.g. class imbalance may favor balanced_accuracy, f1_macro, or roc_auc
+    over plain accuracy; regression currently only offers r2). Explain your rationale.
+  expected_output: >
+    A structured MetricChoice naming exactly one allowed metric, with rationale.
+  agent: model_selector
+  context:
+    - eda_task
+
+set_metric_task:
+  description: >
+    Call set_evaluation_metric with exactly the human-approved metric choice from the
+    previous task, incorporating any edits the human made. Do not alter the choice yourself.
+  expected_output: >
+    Confirmation of the metric that will be used for the rest of the run.
+  agent: model_selector
+  context:
+    - propose_metric_task
+
 model_selection_task:
   description: >
     Call train_candidate_models for run {run_id} and report the resulting leaderboard, sorted
@@ -60,6 +84,7 @@ model_selection_task:
   agent: model_selector
   context:
     - execute_feature_task
+    - set_metric_task
 
 hpo_task:
   description: >
@@ -71,17 +96,37 @@ hpo_task:
   context:
     - model_selection_task
 
+ensembling_task:
+  description: >
+    Call build_ensemble for run {run_id} to combine the strongest model-selection/HPO
+    candidates into a metric-optimized ensemble (soft voting, weighted voting, greedy
+    selection, or stacking -- whichever cross-validates best on the run's chosen metric).
+    Report the winning strategy, its members/weights, and how it compares to the best single
+    model. If the tool reports too few viable candidates to ensemble, say so plainly and move
+    on -- do not treat it as a failure.
+  expected_output: >
+    A complete EnsembleReport describing the winning strategy and its cross-validated score,
+    or a plain statement that ensembling was skipped and why.
+  agent: ensembler
+  context:
+    - model_selection_task
+    - hpo_task
+
 evaluation_task:
   description: >
-    Call evaluate_models for run {run_id} on the tuned candidate(s). In your final answer,
-    also state in plain language which model you recommend and why, and explicitly call
-    out any leakage_suspicion flag, so a human reviewing your answer has what they need to
-    approve or reject it.
+    Call evaluate_models for run {run_id} on the tuned candidate(s) and, if build_ensemble
+    produced one, the "ensemble" candidate too -- score them together in the same call. In
+    your final answer, also state in plain language which model you recommend and why,
+    explicitly comparing the ensemble against the best single model on the run's chosen
+    metric, and call out any leakage_suspicion flag, so a human reviewing your answer has
+    what they need to approve or reject it.
   expected_output: >
-    A complete EvaluationBundle with metrics for every tuned model requested.
+    A complete EvaluationBundle with metrics for every tuned model requested, including the
+    ensemble if one was built.
   agent: evaluator
   context:
     - hpo_task
+    - ensembling_task
 
 finalize_task:
   description: >
