@@ -20,22 +20,26 @@ from ds_crew.guardrails import (
     make_finalize_called_guardrail,
     prevent_target_leakage_guardrail,
     prevent_target_modification_guardrail,
+    validate_metric_choice_guardrail,
 )
 from ds_crew.schemas import (
     CleaningPlan,
     EdaReport,
+    EnsembleReport,
     EvaluationBundle,
     FeatureEngineeringPlan,
     HpoResults,
     Leaderboard,
+    MetricChoice,
 )
 from ds_crew.tools.cleaning_tools import ApplyCleaningPlanTool
 from ds_crew.tools.eda_tools import EdaSummaryTool
+from ds_crew.tools.ensemble_tools import EnsembleModelsTool
 from ds_crew.tools.eval_tools import EvaluateModelsTool
 from ds_crew.tools.feature_tools import ApplyFeaturePlanTool
 from ds_crew.tools.hpo_tools import TuneModelsTool
 from ds_crew.tools.logging_tools import FinalizeRunTool
-from ds_crew.tools.model_tools import TrainCandidateModelsTool
+from ds_crew.tools.model_tools import SetMetricTool, TrainCandidateModelsTool
 
 
 def _build_llm() -> str | LLM:
@@ -96,7 +100,10 @@ class DsCrew:
         return Agent(
             config=self.agents_config["model_selector"],
             llm=_build_llm(),
-            tools=[TrainCandidateModelsTool(run_id=self.run_id)],
+            tools=[
+                SetMetricTool(run_id=self.run_id),
+                TrainCandidateModelsTool(run_id=self.run_id),
+            ],
         )
 
     @agent
@@ -105,6 +112,14 @@ class DsCrew:
             config=self.agents_config["hpo_tuner"],
             llm=_build_llm(),
             tools=[TuneModelsTool(run_id=self.run_id)],
+        )
+
+    @agent
+    def ensembler(self) -> Agent:
+        return Agent(
+            config=self.agents_config["ensembler"],
+            llm=_build_llm(),
+            tools=[EnsembleModelsTool(run_id=self.run_id)],
         )
 
     @agent
@@ -153,12 +168,29 @@ class DsCrew:
         return Task(config=self.tasks_config["execute_feature_task"])
 
     @task
+    def propose_metric_task(self) -> Task:
+        return Task(
+            config=self.tasks_config["propose_metric_task"],
+            output_pydantic=MetricChoice,
+            guardrail=validate_metric_choice_guardrail,
+            human_input=not settings.AUTO_APPROVE,
+        )
+
+    @task
+    def set_metric_task(self) -> Task:
+        return Task(config=self.tasks_config["set_metric_task"])
+
+    @task
     def model_selection_task(self) -> Task:
         return Task(config=self.tasks_config["model_selection_task"], output_pydantic=Leaderboard)
 
     @task
     def hpo_task(self) -> Task:
         return Task(config=self.tasks_config["hpo_task"], output_pydantic=HpoResults)
+
+    @task
+    def ensembling_task(self) -> Task:
+        return Task(config=self.tasks_config["ensembling_task"], output_pydantic=EnsembleReport)
 
     @task
     def evaluation_task(self) -> Task:
