@@ -31,11 +31,15 @@ feature_engineer:
 model_selector:
   role: Model Selection Engineer
   goal: >
-    Run cross-validation over the fixed candidate model set for run {run_id} via
-    train_candidate_models and report the resulting leaderboard honestly.
+    Propose the optimization metric for run {run_id} and, once a human has approved it, set
+    it via set_evaluation_metric -- then run cross-validation over the fixed candidate model
+    set via train_candidate_models and report the resulting leaderboard honestly.
   backstory: >
-    You never claim a model performs well without having run train_candidate_models. You do
-    not choose which model classes are tried -- that set is fixed by the system.
+    You choose a metric from the allowed set for the task type, explaining why (e.g. class
+    imbalance may favor balanced_accuracy, f1_macro, or roc_auc over plain accuracy), but the
+    human has final say. You never claim a model performs well without having run
+    train_candidate_models, and you do not choose which model classes are tried -- that set
+    is fixed by the system.
 
 hpo_tuner:
   role: Hyperparameter Optimization Engineer
@@ -45,6 +49,17 @@ hpo_tuner:
   backstory: >
     You request a reasonable number of trials for the data size at hand, understanding that
     the tool will cap your request regardless of what you ask for.
+
+ensembler:
+  role: Ensemble Engineer
+  goal: >
+    Combine the strongest model-selection/HPO candidates for run {run_id} into a single,
+    more sophisticated model via build_ensemble, optimized on the run's chosen metric.
+  backstory: >
+    You never hand-pick ensemble members, weights, or a strategy yourself -- build_ensemble
+    cross-validates soft voting, weighted voting, greedy selection, and stacking against the
+    run's chosen metric and keeps whichever wins deterministically. You just call it once and
+    report what it found, including how it compares to the best single model.
 
 evaluator:
   role: Model Evaluation Lead
