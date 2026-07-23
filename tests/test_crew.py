@@ -5,10 +5,10 @@ from ds_crew.crew import DsCrew
 from ds_crew.schemas import CleaningPlan, EdaReport, EvaluationBundle, FeatureEngineeringPlan
 
 
-def test_crew_builds_six_agents_and_nine_tasks():
+def test_crew_builds_seven_agents_and_twelve_tasks():
     built = DsCrew(run_id="wiring-test").crew()
-    assert len(built.agents) == 6
-    assert len(built.tasks) == 9
+    assert len(built.agents) == 7
+    assert len(built.tasks) == 12
 
 
 def test_tools_are_bound_to_the_given_run_id():

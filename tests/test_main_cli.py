@@ -39,3 +39,22 @@ def test_main_errors_on_unknown_target_column(tmp_path, capsys):
     with pytest.raises(SystemExit):
         main(["--data", str(csv_path), "--target", "not_a_column"])
     assert "not found in columns" in capsys.readouterr().err
+
+
+def test_main_errors_on_metric_disallowed_for_resolved_task_type(tmp_path, capsys):
+    csv_path = tmp_path / "data.csv"
+    pd.DataFrame({"a": [1, 2, 3], "target": [4, 5, 6]}).to_csv(csv_path, index=False)
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--data",
+                str(csv_path),
+                "--target",
+                "target",
+                "--task",
+                "regression",
+                "--metric",
+                "accuracy",
+            ]
+        )
+    assert "not allowed for task type" in capsys.readouterr().err
