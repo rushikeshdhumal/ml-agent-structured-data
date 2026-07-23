@@ -59,6 +59,15 @@ DEFAULT_TEST_SIZE = _env_float("DEFAULT_TEST_SIZE", 0.2)
 DEFAULT_CV_FOLDS = _env_int("DEFAULT_CV_FOLDS", 5)
 DEFAULT_TOP_K_FOR_HPO = _env_int("DEFAULT_TOP_K_FOR_HPO", 2)
 
+# Ensembling: a hard cap on distinct member models (diminishing returns and
+# rising weight-overfit risk beyond ~5 diverse tabular learners), a bounded
+# Optuna trial budget for weight optimization (cheap -- it scores cached
+# out-of-fold predictions, not refit models), and a minimum CV-metric margin
+# an ensemble must beat the best single model by to be recommended over it.
+MAX_ENSEMBLE_MEMBERS = _env_int("MAX_ENSEMBLE_MEMBERS", 5)
+ENSEMBLE_WEIGHT_TRIALS = _env_int("ENSEMBLE_WEIGHT_TRIALS", 60)
+MIN_ENSEMBLE_IMPROVEMENT = _env_float("MIN_ENSEMBLE_IMPROVEMENT", 0.0)
+
 # Columns with more unique values than this (relative to row count) are
 # treated as classification only if within MAX_CLASSIFICATION_CLASSES;
 # otherwise the target is treated as regression.
