@@ -45,11 +45,10 @@ class RunState:
     evaluation_applied: bool = False
     finalize_applied: bool = False
 
-    # The optimization metric a human has chosen for this run (set via
-    # SetMetricTool). None until set; every scoring site falls back to
-    # model_tools.METRIC_BY_TASK[task_type] when this is still None, so
-    # callers that never invoke the metric-selection gate (e.g. existing
-    # unit tests, direct tool calls) keep today's default behavior.
+# The optimization metric chosen for this run (set via SetMetricTool, and
+# optionally seeded by the CLI entrypoint). When this is still None, scoring
+# sites fall back to model_tools.METRIC_BY_TASK[task_type], so callers that
+# never invoke the metric-selection gate keep today's default behavior.
     metric_name: str | None = None
 
     # Row-level train/test split of the (structurally cleaned) dataset, target
