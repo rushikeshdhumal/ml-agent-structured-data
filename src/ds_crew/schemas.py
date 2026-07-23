@@ -148,6 +148,40 @@ class HpoResults(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Metric selection
+# ---------------------------------------------------------------------------
+
+
+class MetricChoice(BaseModel):
+    run_id: str
+    metric: str
+    rationale: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Ensembling
+# ---------------------------------------------------------------------------
+
+EnsembleStrategy = Literal["equal_voting", "weighted_voting", "stacking", "greedy"]
+
+
+class EnsembleReport(BaseModel):
+    run_id: str
+    ensemble_name: str = "ensemble"
+    strategy: EnsembleStrategy
+    member_models: list[str]
+    weights: Annotated[list[float] | None, BeforeValidator(_none_if_null_string)] = None
+    final_estimator: Annotated[str | None, BeforeValidator(_none_if_null_string)] = None
+    metric_name: str
+    cv_mean_score: float
+    best_single_model: str
+    best_single_cv_score: float
+    improved_over_best_single: bool
+    warnings: list[str] = Field(default_factory=list)
+    notes: str = ""
+
+
+# ---------------------------------------------------------------------------
 # Evaluation / sign-off
 # ---------------------------------------------------------------------------
 
