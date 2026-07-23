@@ -16,7 +16,7 @@ from typing import Any
 
 import pandas as pd
 
-from ds_crew.schemas import EvaluationReport, HpoResult, Leaderboard, TaskType
+from ds_crew.schemas import EnsembleReport, EvaluationReport, HpoResult, Leaderboard, TaskType
 
 
 @dataclass(eq=False)
@@ -41,8 +41,16 @@ class RunState:
     # let the execute-stage tools refuse a second application outright.
     cleaning_applied: bool = False
     features_applied: bool = False
+    ensemble_applied: bool = False
     evaluation_applied: bool = False
     finalize_applied: bool = False
+
+    # The optimization metric a human has chosen for this run (set via
+    # SetMetricTool). None until set; every scoring site falls back to
+    # model_tools.METRIC_BY_TASK[task_type] when this is still None, so
+    # callers that never invoke the metric-selection gate (e.g. existing
+    # unit tests, direct tool calls) keep today's default behavior.
+    metric_name: str | None = None
 
     # Row-level train/test split of the (structurally cleaned) dataset, target
     # column still included -- produced by ApplyCleaningPlanTool, which fits
@@ -65,6 +73,7 @@ class RunState:
     hpo_results: dict[str, HpoResult] = field(default_factory=dict)
     fitted_models: dict[str, Any] = field(default_factory=dict)
     evaluation_reports: dict[str, EvaluationReport] = field(default_factory=dict)
+    ensemble_report: EnsembleReport | None = None
 
     history: list[dict[str, Any]] = field(default_factory=list)
     artifacts_dir: Path = field(init=False)
