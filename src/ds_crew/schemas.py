@@ -204,6 +204,82 @@ class EvaluationBundle(BaseModel):
     reports: list[EvaluationReport]
 
 
+# ---------------------------------------------------------------------------
+# Explainability
+# ---------------------------------------------------------------------------
+
+# How a report's attributions were produced. Permutation importance is always
+# computed (it is the only method that works uniformly across every registry
+# model AND the VotingClassifier/StackingClassifier ensemble); SHAP is layered
+# on top only where it is exact and cheap. "permutation_only" therefore covers
+# both the models with no cheap exact explainer (knn, ensemble) and any model
+# whose SHAP call failed and fell back -- `warnings` distinguishes the two.
+AttributionMethod = Literal["shap_tree", "shap_linear", "permutation_only"]
+
+
+class FeatureAttribution(BaseModel):
+    """One engineered feature's contribution. `source_column` is the original
+    dataset column it came from -- feature_tools.py names each ColumnTransformer
+    entry after its source column, so an engineered name is always
+    "{source_column}__{...}" and the rollup is exact, not a guess.
+    """
+
+    feature: str
+    source_column: str
+    permutation_importance: float
+    permutation_std: float
+    mean_abs_shap: Annotated[float | None, BeforeValidator(_none_if_null_string)] = None
+    direction: Annotated[
+        Literal["increases", "decreases", "mixed"] | None,
+        BeforeValidator(_none_if_null_string),
+    ] = None
+
+
+class LocalExplanation(BaseModel):
+    """A single row's signed attributions. `row_position` is a positional index
+    into the explained X_test sample -- X_test is a numpy array by this stage,
+    so there is no DataFrame label to refer to.
+    """
+
+    kind: Literal["confident_correct", "confident_wrong", "most_uncertain"]
+    row_position: int
+    actual: str
+    predicted: str
+    predicted_proba: Annotated[float | None, BeforeValidator(_none_if_null_string)] = None
+    top_contributions: dict[str, float] = Field(default_factory=dict)
+
+
+class ExplanationReport(BaseModel):
+    run_id: str
+    model_name: str
+    metric_name: str
+    explained_on: Literal["test", "train"] = "test"
+    n_rows_explained: int
+    attribution_method: AttributionMethod
+    top_features: list[FeatureAttribution] = Field(default_factory=list)
+    # Permutation importance rolled up from engineered features to the original
+    # dataset columns and normalized to sum to 1.0 -- the form a human actually
+    # reasons about ("cat_a carries 22% of the signal"), rather than 40 one-hot
+    # columns each carrying a sliver.
+    column_importance: dict[str, float] = Field(default_factory=dict)
+    local_explanations: list[LocalExplanation] = Field(default_factory=list)
+    surrogate_rules: Annotated[str | None, BeforeValidator(_none_if_null_string)] = None
+    surrogate_fidelity: Annotated[float | None, BeforeValidator(_none_if_null_string)] = None
+    unused_features: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    notes: str = ""
+
+
+class ExplanationBundle(BaseModel):
+    run_id: str
+    reports: list[ExplanationReport]
+
+
+# ---------------------------------------------------------------------------
+# Sign-off
+# ---------------------------------------------------------------------------
+
+
 class FinalSignOff(BaseModel):
     run_id: str
     selected_model: str
