@@ -2,13 +2,28 @@ from __future__ import annotations
 
 from ds_crew import settings
 from ds_crew.crew import DsCrew
-from ds_crew.schemas import CleaningPlan, EdaReport, EvaluationBundle, FeatureEngineeringPlan
+from ds_crew.schemas import (
+    CleaningPlan,
+    EdaReport,
+    EvaluationBundle,
+    ExplanationBundle,
+    FeatureEngineeringPlan,
+)
 
 
-def test_crew_builds_seven_agents_and_twelve_tasks():
+def test_crew_builds_eight_agents_and_thirteen_tasks():
     built = DsCrew(run_id="wiring-test").crew()
-    assert len(built.agents) == 7
-    assert len(built.tasks) == 12
+    assert len(built.agents) == 8
+    assert len(built.tasks) == 13
+
+
+def test_explanation_task_runs_between_evaluation_and_finalize():
+    # Order is the invariant that makes explanation safe: it may only read
+    # X_test after evaluate_models has locked scoring in, and its output must
+    # reach the human before finalize records their decision.
+    names = [t.name for t in DsCrew(run_id="order-test").crew().tasks]
+    assert names.index("evaluation_task") < names.index("explanation_task")
+    assert names.index("explanation_task") < names.index("finalize_task")
 
 
 def test_tools_are_bound_to_the_given_run_id():
@@ -25,7 +40,12 @@ def test_propose_and_signoff_tasks_have_output_pydantic_and_human_input(monkeypa
     assert by_output[EdaReport].human_input is False
     assert by_output[CleaningPlan].human_input is True
     assert by_output[FeatureEngineeringPlan].human_input is True
-    assert by_output[EvaluationBundle].human_input is True
+    # The sign-off gate sits on explanation_task, not evaluation_task, so the
+    # human approves once with both the held-out metrics and the evidence of
+    # what the model learned in front of them -- rather than approving on
+    # metrics alone and only then being shown the explanation.
+    assert by_output[EvaluationBundle].human_input is False
+    assert by_output[ExplanationBundle].human_input is True
 
 
 def test_auto_approve_disables_human_input(monkeypatch):
@@ -45,6 +65,12 @@ def test_finalize_task_carries_guardrail():
     built = DsCrew(run_id="finalize-guardrail-test").crew()
     finalize_task = next(t for t in built.tasks if t.name == "finalize_task")
     assert finalize_task.guardrail is not None
+
+
+def test_explanation_task_carries_guardrail():
+    built = DsCrew(run_id="explanation-guardrail-test").crew()
+    explanation_task = next(t for t in built.tasks if t.name == "explanation_task")
+    assert explanation_task.guardrail is not None
 
 
 def test_process_is_sequential():
