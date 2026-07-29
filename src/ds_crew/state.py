@@ -16,7 +16,14 @@ from typing import Any
 
 import pandas as pd
 
-from ds_crew.schemas import EnsembleReport, EvaluationReport, HpoResult, Leaderboard, TaskType
+from ds_crew.schemas import (
+    EnsembleReport,
+    EvaluationReport,
+    ExplanationReport,
+    HpoResult,
+    Leaderboard,
+    TaskType,
+)
 
 
 @dataclass(eq=False)
@@ -43,6 +50,7 @@ class RunState:
     features_applied: bool = False
     ensemble_applied: bool = False
     evaluation_applied: bool = False
+    explanation_applied: bool = False
     finalize_applied: bool = False
 
 # The optimization metric chosen for this run (set via SetMetricTool, and
@@ -73,6 +81,7 @@ class RunState:
     fitted_models: dict[str, Any] = field(default_factory=dict)
     evaluation_reports: dict[str, EvaluationReport] = field(default_factory=dict)
     ensemble_report: EnsembleReport | None = None
+    explanation_reports: dict[str, ExplanationReport] = field(default_factory=dict)
 
     history: list[dict[str, Any]] = field(default_factory=list)
     artifacts_dir: Path = field(init=False)
