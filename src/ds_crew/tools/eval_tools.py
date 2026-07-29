@@ -1,4 +1,14 @@
-"""Deterministic held-out evaluation. X_test is touched exactly once, here."""
+"""Deterministic held-out evaluation. X_test is *scored* exactly once, here.
+
+Precise form of the invariant: no model may be selected, tuned, ensembled, or
+compared on the basis of held-out performance more than once, so the test
+score cannot be optimized against. `explain_tools.py` reads X_test a second
+time, but read-only and strictly after this module has run (it refuses to
+start unless `state.evaluation_applied` is True), and its output feeds only
+the terminal human sign-off gate -- it can never flow back into model
+selection. That is a different thing from scoring, and it is why the wording
+here is "scored exactly once" rather than "touched exactly once".
+"""
 
 from __future__ import annotations
 

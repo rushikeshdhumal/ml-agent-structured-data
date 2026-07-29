@@ -14,8 +14,8 @@ model fitting. Ensemble size is capped at settings.MAX_ENSEMBLE_MEMBERS.
 Runs on X_train only -- X_test is never touched here. The winning ensemble is
 fit once on the full X_train and registered as an extra leaderboard candidate
 named "ensemble", so it is scored by the existing single-pass evaluate_models
-tool alongside the tuned single models, preserving "X_test touched exactly
-once".
+tool alongside the tuned single models, preserving "X_test scored exactly
+once" (see eval_tools.py's docstring for the precise form of that invariant).
 """
 
 from __future__ import annotations

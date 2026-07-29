@@ -6,8 +6,9 @@ module's docstring). This module consumes the already-split, already-cleaned
 state.df_train/state.df_test and fits encoders/scalers on the training split
 only: target-mean/frequency encoders must be *fit* on the training fold only,
 or they leak target information into the engineered features. Model
-selection and HPO only ever see X_train; X_test is touched exactly once, in
-evaluation.
+selection and HPO only ever see X_train; X_test is *scored* exactly once, in
+evaluation (see eval_tools.py's docstring for the precise form of that
+invariant and why explain_tools.py's later read-only pass does not violate it).
 """
 
 from __future__ import annotations
