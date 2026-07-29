@@ -68,6 +68,19 @@ MAX_ENSEMBLE_MEMBERS = _env_int("MAX_ENSEMBLE_MEMBERS", 5)
 ENSEMBLE_WEIGHT_TRIALS = _env_int("ENSEMBLE_WEIGHT_TRIALS", 60)
 MIN_ENSEMBLE_IMPROVEMENT = _env_float("MIN_ENSEMBLE_IMPROVEMENT", 0.0)
 
+# Explainability: every knob here exists to keep the stage's cost bounded and
+# its output reviewable by a human, the same way MAX_HPO_TRIALS/
+# MAX_ENSEMBLE_MEMBERS bound their stages. EXPLAIN_MAX_ROWS subsamples X_test
+# before any SHAP call (exact tree SHAP is fast, but the kernel/linear paths
+# and permutation importance both scale with row count); EXPLAIN_TOP_K_FEATURES
+# bounds how much of a wide feature matrix reaches LLM context, mirroring
+# EDA_DETAILED_COLUMN_LIMIT's role for the EDA stage.
+EXPLAIN_MAX_ROWS = _env_int("EXPLAIN_MAX_ROWS", 500)
+EXPLAIN_PERMUTATION_REPEATS = _env_int("EXPLAIN_PERMUTATION_REPEATS", 10)
+EXPLAIN_TOP_K_FEATURES = _env_int("EXPLAIN_TOP_K_FEATURES", 15)
+EXPLAIN_LOCAL_EXAMPLES = _env_int("EXPLAIN_LOCAL_EXAMPLES", 3)
+EXPLAIN_SURROGATE_MAX_DEPTH = _env_int("EXPLAIN_SURROGATE_MAX_DEPTH", 3)
+
 # Columns with more unique values than this (relative to row count) are
 # treated as classification only if within MAX_CLASSIFICATION_CLASSES;
 # otherwise the target is treated as regression.
