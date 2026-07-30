@@ -209,12 +209,19 @@ class SetMetricTool(BaseTool):
     args_schema: type[BaseModel] = MetricChoice
     run_id: str = ""
 
-def _run(self, **kwargs) -> str:
-    kwargs.setdefault("run_id", self.run_id)
-    choice = MetricChoice(**kwargs)
-    if self.run_id and choice.run_id != self.run_id:
-        return json.dumps({"error": f"run_id mismatch: tool bound to '{self.run_id}' but got '{choice.run_id}'"})
-    state = get_data_store().get(choice.run_id)
+    def _run(self, **kwargs) -> str:
+        kwargs.setdefault("run_id", self.run_id)
+        choice = MetricChoice(**kwargs)
+        if self.run_id and choice.run_id != self.run_id:
+            return json.dumps(
+                {
+                    "error": (
+                        f"run_id mismatch: tool bound to '{self.run_id}' but got "
+                        f"'{choice.run_id}'"
+                    )
+                }
+            )
+        state = get_data_store().get(choice.run_id)
         allowed = ALLOWED_METRICS[state.task_type]
         if choice.metric not in allowed:
             return json.dumps(

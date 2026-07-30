@@ -17,6 +17,7 @@ from crewai.project import CrewBase, agent, crew, task
 
 from ds_crew import settings
 from ds_crew.guardrails import (
+    make_explanation_grounded_guardrail,
     make_finalize_called_guardrail,
     prevent_target_leakage_guardrail,
     prevent_target_modification_guardrail,
@@ -27,6 +28,7 @@ from ds_crew.schemas import (
     EdaReport,
     EnsembleReport,
     EvaluationBundle,
+    ExplanationBundle,
     FeatureEngineeringPlan,
     HpoResults,
     Leaderboard,
@@ -36,6 +38,7 @@ from ds_crew.tools.cleaning_tools import ApplyCleaningPlanTool
 from ds_crew.tools.eda_tools import EdaSummaryTool
 from ds_crew.tools.ensemble_tools import EnsembleModelsTool
 from ds_crew.tools.eval_tools import EvaluateModelsTool
+from ds_crew.tools.explain_tools import ExplainModelsTool
 from ds_crew.tools.feature_tools import ApplyFeaturePlanTool
 from ds_crew.tools.hpo_tools import TuneModelsTool
 from ds_crew.tools.logging_tools import FinalizeRunTool
@@ -123,6 +126,14 @@ class DsCrew:
         )
 
     @agent
+    def explainer(self) -> Agent:
+        return Agent(
+            config=self.agents_config["explainer"],
+            llm=_build_llm(),
+            tools=[ExplainModelsTool(run_id=self.run_id)],
+        )
+
+    @agent
     def evaluator(self) -> Agent:
         return Agent(
             config=self.agents_config["evaluator"],
@@ -194,9 +205,22 @@ class DsCrew:
 
     @task
     def evaluation_task(self) -> Task:
+        # Deliberately NOT human-gated: the sign-off gate lives on
+        # explanation_task, one step later, so the human reviews held-out
+        # metrics and evidence of what the model learned in a single decision
+        # rather than being asked to approve on metrics alone and then shown
+        # the explanation afterwards.
         return Task(
             config=self.tasks_config["evaluation_task"],
             output_pydantic=EvaluationBundle,
+        )
+
+    @task
+    def explanation_task(self) -> Task:
+        return Task(
+            config=self.tasks_config["explanation_task"],
+            output_pydantic=ExplanationBundle,
+            guardrail=make_explanation_grounded_guardrail(self.run_id),
             human_input=not settings.AUTO_APPROVE,
         )
 

@@ -14,6 +14,7 @@ build/
 .ruff_cache/
 .coverage
 htmlcov/
+data/
 
 # Claude Code local/session state (project-level .claude/ config is tracked;
 # personal machine-specific overrides are not)

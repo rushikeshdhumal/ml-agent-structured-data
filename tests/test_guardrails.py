@@ -3,11 +3,29 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from ds_crew.guardrails import (
+    make_explanation_grounded_guardrail,
     make_finalize_called_guardrail,
     prevent_target_leakage_guardrail,
     prevent_target_modification_guardrail,
 )
-from ds_crew.schemas import CleaningPlan, ColumnCleaningAction, ColumnFeaturePlan, FeatureEngineeringPlan
+from ds_crew.schemas import (
+    CleaningPlan,
+    ColumnCleaningAction,
+    ColumnFeaturePlan,
+    ExplanationBundle,
+    ExplanationReport,
+    FeatureEngineeringPlan,
+)
+
+
+def _explanation_report(model_name: str) -> ExplanationReport:
+    return ExplanationReport(
+        run_id="test-run-001",
+        model_name=model_name,
+        metric_name="f1_macro",
+        n_rows_explained=10,
+        attribution_method="permutation_only",
+    )
 
 
 def _task_output(pydantic_obj):
@@ -103,3 +121,53 @@ def test_finalize_called_guardrail_rejects_unknown_run():
     guardrail = make_finalize_called_guardrail("ghost-run")
     ok, error = guardrail(_task_output(None))
     assert ok is False
+
+
+def test_explanation_guardrail_rejects_when_tool_never_called(classification_run, run_id):
+    guardrail = make_explanation_grounded_guardrail(run_id)
+    bundle = ExplanationBundle(run_id=run_id, reports=[_explanation_report("knn")])
+    ok, error = guardrail(_task_output(bundle))
+    assert ok is False
+    assert "explain_models was not called" in error
+
+
+def test_explanation_guardrail_passes_when_grounded(classification_run, run_id):
+    classification_run.record("explanation", "explained", {"models": ["knn"]})
+    classification_run.explanation_reports["knn"] = _explanation_report("knn")
+    guardrail = make_explanation_grounded_guardrail(run_id)
+    bundle = ExplanationBundle(run_id=run_id, reports=[_explanation_report("knn")])
+    ok, result = guardrail(_task_output(bundle))
+    assert ok is True
+    assert result is bundle
+
+
+def test_explanation_guardrail_rejects_fabricated_model(classification_run, run_id):
+    # The failure this guardrail exists for: the tool ran, but the agent
+    # reports attributions for a model it never actually explained. An
+    # invented explanation is worse than a missing one -- it launders an
+    # unverified claim into the human sign-off gate.
+    classification_run.record("explanation", "explained", {"models": ["knn"]})
+    classification_run.explanation_reports["knn"] = _explanation_report("knn")
+    guardrail = make_explanation_grounded_guardrail(run_id)
+    bundle = ExplanationBundle(
+        run_id=run_id,
+        reports=[_explanation_report("knn"), _explanation_report("xgboost")],
+    )
+    ok, error = guardrail(_task_output(bundle))
+    assert ok is False
+    assert "xgboost" in error
+
+
+def test_explanation_guardrail_rejects_missing_pydantic(classification_run, run_id):
+    classification_run.record("explanation", "explained", {"models": ["knn"]})
+    guardrail = make_explanation_grounded_guardrail(run_id)
+    ok, error = guardrail(_task_output(None))
+    assert ok is False
+    assert "ExplanationBundle" in error
+
+
+def test_explanation_guardrail_rejects_unknown_run():
+    guardrail = make_explanation_grounded_guardrail("ghost-run")
+    ok, error = guardrail(_task_output(None))
+    assert ok is False
+    assert "ghost-run" in error

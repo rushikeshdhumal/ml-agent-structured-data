@@ -9,7 +9,14 @@ authors = [{ name = "Rushikesh Dhumal" }]
 dependencies = [
     "crewai[tools]>=1.15.1,<2",
     "pandas>=2.2,<3",
-    "numpy>=1.26,<3",
+    # Upper bound is set by shap, not by anything this project needs directly:
+    # shap depends on numba (a hard dependency on every platform except
+    # darwin/x86_64), and numba 0.66.0 -- the latest -- requires numpy<2.5.
+    # Without this cap uv backtracks through numba releases looking for one
+    # that accepts numpy 2.5.x, finds none, and lands on a 2021-era
+    # numba/llvmlite pair that cannot build on Python 3.13 at all. Lift this
+    # only once numba publishes numpy 2.5 support.
+    "numpy>=1.26,<2.5",
     "scikit-learn>=1.5,<2",
     "optuna>=3.6,<4",
     "mlflow>=2.15,<3",
@@ -21,6 +28,15 @@ dependencies = [
     "xgboost>=2.0,<3",
     "lightgbm>=4.0,<5",
     "catboost>=1.2,<2",
+    "shap>=0.46,<1",
+    # Not imported directly -- it is shap's transitive dependency, floored here
+    # to steer uv's *universal* resolution. Resolving for a single interpreter
+    # picks numba 0.66.0 correctly, but resolving across all of requires-python
+    # at once, uv forks and selects numba 0.53.1 for python>=3.11 (a release
+    # predating 3.11 entirely), whose ancient llvmlite then fails to build.
+    # This floor removes that branch. Drop it if uv's forking resolver stops
+    # producing that result.
+    "numba>=0.60",
 ]
 
 [project.optional-dependencies]

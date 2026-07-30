@@ -118,8 +118,10 @@ evaluation_task:
     produced one, the "ensemble" candidate too -- score them together in the same call. In
     your final answer, also state in plain language which model you recommend and why,
     explicitly comparing the ensemble against the best single model on the run's chosen
-    metric, and call out any leakage_suspicion flag, so a human reviewing your answer has
-    what they need to approve or reject it.
+    metric, and call out any leakage_suspicion flag. The explanation stage runs next and
+    presents your recommendation to a human together with evidence of what the model
+    learned, so make your recommendation and your reservations explicit enough to carry
+    into that review.
   expected_output: >
     A complete EvaluationBundle with metrics for every tuned model requested, including the
     ensemble if one was built.
@@ -127,6 +129,26 @@ evaluation_task:
   context:
     - hpo_task
     - ensembling_task
+
+explanation_task:
+  description: >
+    Call explain_models exactly once for run {run_id} to explain the model(s) that were just
+    evaluated. Then, in plain language a non-specialist can act on, report: which original
+    dataset columns actually drive the model you recommend (use column_importance, not the
+    encoded feature names); whether any top column could plausibly be a proxy for the target
+    '{target}' and therefore a leakage risk worth investigating before approval; what the
+    model's most confident mistakes reveal about where it fails; and whether the surrogate
+    fidelity is high enough for the simple rules to be trusted as a description of the model.
+    Report only what the tool returned -- never assert that a feature matters if
+    explain_models did not measure it. State plainly which engineered features contributed
+    nothing. This is the evidence a human will use to approve or reject the model, so be
+    direct about weaknesses rather than presenting the model in its best light.
+  expected_output: >
+    A complete ExplanationBundle for every model explained, plus a plain-language summary of
+    what drives the recommended model, any leakage concerns, and any reason for caution.
+  agent: explainer
+  context:
+    - evaluation_task
 
 finalize_task:
   description: >
@@ -142,3 +164,4 @@ finalize_task:
   agent: evaluator
   context:
     - evaluation_task
+    - explanation_task

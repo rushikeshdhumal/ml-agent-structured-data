@@ -20,7 +20,12 @@ structured `approved: bool` field (see `schemas.FinalSignOff`) that
 
 from typing import Any, Tuple
 
-from ds_crew.schemas import CleaningPlan, FeatureEngineeringPlan, MetricChoice
+from ds_crew.schemas import (
+    CleaningPlan,
+    ExplanationBundle,
+    FeatureEngineeringPlan,
+    MetricChoice,
+)
 from ds_crew.state import get_data_store
 from ds_crew.tools.model_tools import ALLOWED_METRICS
 
@@ -86,6 +91,58 @@ def validate_metric_choice_guardrail(output: Any) -> Tuple[bool, Any]:
             f"Choose one of: {sorted(allowed)}."
         )
     return True, choice
+
+
+def make_explanation_grounded_guardrail(run_id: str):
+    """Attached to explanation_task. Confirms two things: that explain_models
+    was actually called, and that every model the agent reports on has a real
+    report behind it in the DataStore.
+
+    finalize_task already taught this project that an agent will sometimes
+    narrate what it would do instead of calling its tool (see
+    make_finalize_called_guardrail). The stakes are higher here: an
+    explanation is the *evidence a human approves a model on*, so a
+    plausible-sounding fabricated attribution is strictly worse than a missing
+    one -- it would launder an unverified claim straight into the sign-off
+    gate. Checking the reported model names against state.explanation_reports
+    means the numbers reaching the human came from explain_models, not from
+    the LLM's sense of which features ought to matter.
+
+    Needs `run_id` closed over from crew.py so the DataStore is reachable even
+    when output.pydantic is missing entirely.
+    """
+
+    def _guardrail(output: Any, _run_id: str = run_id) -> Tuple[bool, Any]:
+        try:
+            state = get_data_store().get(_run_id)
+        except KeyError as exc:
+            return False, str(exc)
+
+        called = any(
+            h["stage"] == "explanation" and h["action"] == "explained" for h in state.history
+        )
+        if not called:
+            return False, (
+                "explain_models was not called. You must call it once for the evaluated "
+                "model(s) before this task can complete -- do not describe what the "
+                "explanation would show; call the tool and report what it returns."
+            )
+
+        bundle = output.pydantic
+        if bundle is None or not isinstance(bundle, ExplanationBundle):
+            return False, "Expected an ExplanationBundle; structured output missing or malformed."
+
+        ungrounded = sorted(
+            {r.model_name for r in bundle.reports} - set(state.explanation_reports)
+        )
+        if ungrounded:
+            return False, (
+                f"Reported explanations for {ungrounded}, which explain_models never "
+                f"produced. Report only these models: {sorted(state.explanation_reports)}."
+            )
+        return True, bundle
+
+    return _guardrail
 
 
 def make_finalize_called_guardrail(run_id: str):
