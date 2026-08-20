@@ -32,9 +32,9 @@ uv run ds-crew --data path/to/data.csv --target target_column
 
 Each invocation is one dataset, one CrewAI run, one MLflow run. By default
 you'll be prompted at the console to review/edit the cleaning plan, the
-feature-engineering plan, and the final model before anything irreversible
-happens; set `AUTO_APPROVE=1` in `.env` to skip these gates for
-automated/headless runs (every auto-approved run is tagged
+feature-engineering plan, the optimization metric, and the explained final
+model before anything irreversible happens; set `AUTO_APPROVE=1` in `.env` to
+skip these gates for automated/headless runs (every auto-approved run is tagged
 `auto_approve=true` in MLflow so it's never mistaken for a real sign-off).
 
 Inspect results:
@@ -49,6 +49,97 @@ Run the tests:
 uv run pytest                    # unit tests only (default; no LLM calls)
 uv run pytest -m e2e tests/e2e   # full pipeline, requires a live LLM key
 ```
+
+## Walkthrough: a full interactive run
+
+The headless path above is the CI story. The interactive path is the one worth
+watching, because the four human gates are the point of the design.
+
+### 1. Prepare the dataset
+
+Any CSV with a target column. To exercise every stage, pick one with missing
+values (cleaning does real work), mixed numeric/categorical columns (feature
+engineering does real work), and mild class imbalance (the metric gate faces a
+genuine decision). Columns a reader already understands help most of all --
+they make the explainability output checkable against intuition rather than
+taken on trust.
+
+Drop free-text and ID-like columns first (`Name`, `Ticket`, `PassengerId`, ...).
+The feature-plan schema requires *every* non-target column to be explicitly
+encoded or dropped, so leaving high-cardinality text in mostly buys retries.
+
+### 2. Configure `.env`
+
+```bash
+MODEL=z-ai/glm-5.2
+LLM_BASE_URL=https://integrate.api.nvidia.com/v1
+LLM_API_KEY=nvapi-...
+MAX_RPM=35
+AUTO_APPROVE=0        # 0 = the four human gates fire
+```
+
+### 3. Run
+
+Must be a real interactive terminal -- the gates read stdin, so this cannot be
+backgrounded or redirected to a file.
+
+```bash
+uv run ds-crew --data path/to/data.csv --target target_column --run-name my-demo
+```
+
+Optional: `--task classification|regression|auto` (default `auto`),
+`--test-size 0.2`, `--metric roc_auc` (seeds the gate; a human can still
+override it live).
+
+### 4. The four gates
+
+The run pauses at each. Press Enter to accept, or type feedback to send the
+agent back:
+
+| # | Gate | What you're reviewing |
+|---|---|---|
+| 1 | `propose_cleaning_task` | per-column imputation / outlier strategy |
+| 2 | `propose_feature_task` | encoding + scaling per column |
+| 3 | `propose_metric_task` | the metric all later stages optimize, with the agent's reasoning from EDA |
+| 4 | `explanation_task` | held-out metrics **and** what the model learned -- then approve or reject |
+
+Gate 3 is a good place to override live and watch the choice propagate through
+CV, HPO, ensembling, and evaluation.
+
+Gate 4 is the one to land on: **type an actual approval there.** Every
+`AUTO_APPROVE=1` run ends `rejected` by design (the safety default when no
+human is present), so a real approval is the only way to exercise the approved
+branch -- `model_status=approved` plus a serialized `model/` artifact.
+
+Budget roughly 10-15 minutes of pipeline time on top of your own review time.
+
+### 5. Inspect
+
+```bash
+uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
+```
+
+Walk the artifact tree at <http://localhost:5000>: `cleaning/`,
+`feature_engineering/`, `hpo/`, `ensemble/`, `evaluation/`, `explanation/`,
+`model/`. Every approved plan and the raw human feedback text is stored, so the
+full decision trail is reconstructable after the fact.
+
+The single most informative file is `explanation/<model>_report.json`:
+`column_importance` in original column names, the model's `confident_wrong`
+rows with signed per-feature contributions, and `surrogate_fidelity`.
+
+### Two things to expect
+
+- **Rate limits are account-wide, not per-run.** `MAX_RPM` paces calls within a
+  single run and has no visibility into your previous one, so back-to-back runs
+  on a free tier will 429 even with it set. Space runs 60-90s apart. NVIDIA's
+  `z-ai/glm-5.2` has a history of persistent 429s; `meta/llama-3.3-70b-instruct`
+  is the more reliable fallback, at the cost of weaker structured output.
+- **Guardrail retries are normal.** Some models wrap structured output in prose,
+  which the `propose`-stage guardrails reject; you'll see `Guardrail Failed`
+  boxes that self-heal on the next attempt. A verified run hit four of these and
+  still completed cleanly. This is the retry loop working, not the pipeline
+  breaking.
 
 ## Architecture
 
