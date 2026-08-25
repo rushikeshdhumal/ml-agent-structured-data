@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from ds_crew import settings
 from ds_crew.crew import DsCrew
 from ds_crew.schemas import (
@@ -11,17 +13,34 @@ from ds_crew.schemas import (
 )
 
 
-def test_crew_builds_eight_agents_and_thirteen_tasks():
-    built = DsCrew(run_id="wiring-test").crew()
-    assert len(built.agents) == 8
-    assert len(built.tasks) == 13
+@pytest.fixture(scope="module")
+def built_crew():
+    """One crew built per module, shared by every test that only inspects
+    structure.
+
+    Building a crew costs ~7s (CrewAI agent construction, LLM object setup and
+    YAML config parsing) and no ML runs at all, so the seven structural tests
+    here were paying ~50s purely to rebuild an identical object. Everything this
+    fixture is shared by -- agent/task counts, task ordering, guardrail presence,
+    process type -- is invariant to AUTO_APPROVE, MODEL and MAX_RPM, so a shared
+    instance cannot mask a settings-dependent bug.
+
+    Tests that monkeypatch settings, or that assert on a specific run_id, still
+    build their own; sharing this one would defeat what they exist to check.
+    """
+    return DsCrew(run_id="wiring-test").crew()
 
 
-def test_explanation_task_runs_between_evaluation_and_finalize():
+def test_crew_builds_eight_agents_and_thirteen_tasks(built_crew):
+    assert len(built_crew.agents) == 8
+    assert len(built_crew.tasks) == 13
+
+
+def test_explanation_task_runs_between_evaluation_and_finalize(built_crew):
     # Order is the invariant that makes explanation safe: it may only read
     # X_test after evaluate_models has locked scoring in, and its output must
     # reach the human before finalize records their decision.
-    names = [t.name for t in DsCrew(run_id="order-test").crew().tasks]
+    names = [t.name for t in built_crew.tasks]
     assert names.index("evaluation_task") < names.index("explanation_task")
     assert names.index("explanation_task") < names.index("finalize_task")
 
@@ -54,30 +73,26 @@ def test_auto_approve_disables_human_input(monkeypatch):
     assert all(t.human_input is False for t in built.tasks)
 
 
-def test_propose_tasks_carry_guardrails():
-    built = DsCrew(run_id="guardrail-test").crew()
-    by_output = {t.output_pydantic: t for t in built.tasks if t.output_pydantic}
+def test_propose_tasks_carry_guardrails(built_crew):
+    by_output = {t.output_pydantic: t for t in built_crew.tasks if t.output_pydantic}
     assert by_output[CleaningPlan].guardrail is not None
     assert by_output[FeatureEngineeringPlan].guardrail is not None
 
 
-def test_finalize_task_carries_guardrail():
-    built = DsCrew(run_id="finalize-guardrail-test").crew()
-    finalize_task = next(t for t in built.tasks if t.name == "finalize_task")
+def test_finalize_task_carries_guardrail(built_crew):
+    finalize_task = next(t for t in built_crew.tasks if t.name == "finalize_task")
     assert finalize_task.guardrail is not None
 
 
-def test_explanation_task_carries_guardrail():
-    built = DsCrew(run_id="explanation-guardrail-test").crew()
-    explanation_task = next(t for t in built.tasks if t.name == "explanation_task")
+def test_explanation_task_carries_guardrail(built_crew):
+    explanation_task = next(t for t in built_crew.tasks if t.name == "explanation_task")
     assert explanation_task.guardrail is not None
 
 
-def test_process_is_sequential():
+def test_process_is_sequential(built_crew):
     from crewai import Process
 
-    built = DsCrew(run_id="process-test").crew()
-    assert built.process == Process.sequential
+    assert built_crew.process == Process.sequential
 
 
 def test_plain_model_string_used_when_no_custom_base_url(monkeypatch):
