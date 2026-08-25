@@ -1,14 +1,23 @@
 # DS-Crew
 
+[![CI](https://github.com/rushikeshdhumal/ml-agent-structured-data/actions/workflows/ci.yml/badge.svg)](https://github.com/rushikeshdhumal/ml-agent-structured-data/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![Built with CrewAI](https://img.shields.io/badge/built%20with-CrewAI-6f42c1.svg)](https://docs.crewai.com)
 
-A [CrewAI](https://docs.crewai.com) multi-agent system that runs the full
-data-science lifecycle for structured (tabular) data -- EDA, cleaning,
-feature engineering, model selection, hyperparameter optimization,
-evaluation, and metadata logging -- on top of deterministic, strictly-typed
-Python tools instead of trusting an LLM to touch your data directly.
+**Letting an autonomous agent near real data is a governance problem before it
+is a modeling problem.** The hard question is not whether an LLM can pick a good
+model -- it usually can. It is whether you can prove what it did, stop it before
+it does something irreversible, and explain the result to whoever is accountable
+for the decision.
+
+DS-Crew is one answer. It is a [CrewAI](https://docs.crewai.com) multi-agent
+system that runs the full data-science lifecycle for structured (tabular) data
+-- EDA, cleaning, feature engineering, model selection, hyperparameter
+optimization, ensembling, evaluation, and explainability -- where **agents never
+touch the data**. Every mutation goes through a deterministic, Pydantic-validated
+Python tool; every irreversible decision is gated on a human; every step lands in
+an audit trail.
 
 Raw data acquisition is explicitly out of scope: you hand it a CSV and a
 target column, and it takes it from there.
@@ -111,7 +120,10 @@ Gate 4 is the one to land on: **type an actual approval there.** Every
 human is present), so a real approval is the only way to exercise the approved
 branch -- `model_status=approved` plus a serialized `model/` artifact.
 
-Budget roughly 10-15 minutes of pipeline time on top of your own review time.
+Budget roughly 20-25 minutes of pipeline time on top of your own review time.
+(A measured headless run on a 500-row dataset took 22.1 minutes end to end with
+`AUTO_APPROVE=1`, so that figure includes no human thinking time at all. Most of
+it is LLM latency across 13 tasks, not local compute.)
 
 ### 5. Inspect
 
@@ -376,6 +388,33 @@ tests/e2e/          Full pipeline test; requires a live LLM key, opt-in via `-m 
 > `shap` -> `numba`, not from anything this project uses directly; numba 0.66.0
 > (the latest) requires `numpy<2.5`. Lift it only once numba ships numpy 2.5
 > support.
+
+## Limitations
+
+Stated plainly, because knowing where a system stops is part of operating it.
+
+- **Regression optimizes `r2` only.** Deliberate, not an oversight: HPO hardcodes
+  `direction="maximize"` and the near-perfect leakage heuristic assumes a bounded
+  0-1 metric, so an unbounded lower-is-better error metric like RMSE would break
+  both silently. Adding one means addressing those two assumptions first.
+- **CSV in, one dataset per run.** Data acquisition, joins, and warehouse
+  connectivity are all out of scope by design.
+- **Single-process.** `DataStore` holds the DataFrames for a run in memory in one
+  process. That is fine for a CLI invocation and is *not* yet suitable for
+  distributed, multi-worker, or serverless execution.
+- **Human gates block on stdin.** Interactive runs need a real terminal; they
+  cannot be backgrounded or piped. Headless automation must use `AUTO_APPROVE=1`,
+  which by design always finalizes as `rejected` since no human actually approved.
+- **The pipeline ends at a signed-off model.** No serving, no monitoring, no
+  drift detection, no scheduled retraining.
+- **SHAP is skipped for multiclass CatBoost.** Upstream `TreeExplainer` segfaults
+  there, so it is guarded pre-emptively and that model falls back to permutation
+  importance. Binary CatBoost is unaffected.
+- **`numpy` is pinned `<2.5`**, inherited from `shap -> numba`. Not a constraint
+  this project needs directly; see the note under Configuration.
+- **LLM cost is not yet a first-class budget.** Trial counts, ensemble members and
+  explanation rows are all hard-capped in code, but token spend is recorded rather
+  than capped.
 
 ## License
 
