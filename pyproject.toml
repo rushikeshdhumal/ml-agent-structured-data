@@ -44,7 +44,6 @@ dev = [
     "pytest>=8.0,<9",
     "pytest-cov>=5.0,<6",
     "pytest-mock>=3.14,<4",
-    "pytest-xdist>=3.6,<4",
     "ruff>=0.6,<1",
 ]
 
@@ -62,6 +61,21 @@ packages = ["src/ds_crew"]
 markers = [
     "e2e: end-to-end tests that require a live LLM key; skipped by default",
 ]
+# Deliberately NOT parallelised with pytest-xdist. It looks like the obvious
+# win on a ~7 minute suite, but it was benchmarked and rejected: this suite is
+# already parallel *inside* scikit-learn (BASE_MODEL_KWARGS sets n_jobs/
+# thread_count to -1, and permutation_importance runs n_jobs=-1), so xdist
+# workers contend for the same cores rather than adding throughput. Measured on
+# a 16-core box against a 417s serial baseline: `-n 4` took 544s (30% SLOWER),
+# and even with OMP/MKL thread pinning plus `--dist loadfile` the best config
+# (`-n 8`) reached only 390s -- a 6.6% gain that also broke one test
+# reproducibly, indicating real cross-test coupling that serial execution hides
+# (tests share a fixed run_id, "test-run-001", and therefore one `runs/`
+# artifact directory -- a likely but unconfirmed cause). Anyone enabling xdist
+# must diagnose that first.
+# Thread pinning cannot fix the core contention either: joblib's loky
+# backend spawns *processes*, which OMP_NUM_THREADS does not govern.
+# Re-benchmark before reaching for it again; don't assume it helps.
 addopts = "-m 'not e2e'"
 testpaths = ["tests"]
 
