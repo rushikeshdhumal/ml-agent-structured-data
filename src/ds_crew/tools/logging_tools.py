@@ -41,6 +41,7 @@ from crewai.tools import BaseTool
 from mlflow.tracking import MlflowClient
 from pydantic import BaseModel
 
+from ds_crew import settings
 from ds_crew.schemas import FinalSignOff
 from ds_crew.state import get_data_store
 
@@ -109,6 +110,62 @@ def log_plan_and_feedback(
 
 def log_stage_metrics(run_id: str | None, stage: str, metrics: dict[str, float]) -> None:
     log_metrics(run_id, {f"{stage}_{k}": v for k, v in metrics.items()})
+
+
+def estimate_cost_usd(prompt_tokens: int, completion_tokens: int) -> float | None:
+    """Estimated USD for one run's LLM traffic, or None when rates aren't set.
+
+    Returning None (rather than 0.0) when either rate is unconfigured is the
+    point: it records "cost unknown / not priced" instead of asserting the run
+    was free, which would be a real claim and usually a wrong one. Callers must
+    omit the metric entirely on None.
+    """
+    price_in = settings.LLM_PRICE_PER_1M_INPUT
+    price_out = settings.LLM_PRICE_PER_1M_OUTPUT
+    if price_in is None or price_out is None:
+        return None
+    return round(
+        (prompt_tokens / 1_000_000) * price_in + (completion_tokens / 1_000_000) * price_out,
+        6,
+    )
+
+
+def log_llm_usage(run_id: str | None, crew: Any, wall_clock_s: float) -> None:
+    """Record what a run actually consumed: tokens, request count, wall clock,
+    and (when priced) an estimated cost.
+
+    Reads `crew.calculate_usage_metrics()` rather than `CrewOutput.token_usage`
+    because this is called from a `finally` and must work on the failure path
+    too -- a crashed run is precisely the one whose spend you want recorded, and
+    on that path there is no CrewOutput at all.
+
+    Never raises. Being called from a `finally` means any exception escaping
+    here would *replace* the real exception propagating out of kickoff, turning
+    a diagnosable pipeline failure into a confusing logging failure. Losing a
+    metric is strictly better than losing a stack trace.
+    """
+    metrics: dict[str, float] = {"wall_clock_s": round(wall_clock_s, 1)}
+    try:
+        usage = crew.calculate_usage_metrics()
+        for field in (
+            "total_tokens",
+            "prompt_tokens",
+            "completion_tokens",
+            "cached_prompt_tokens",
+            "successful_requests",
+        ):
+            value = getattr(usage, field, None)
+            if value is not None:
+                metrics[field] = float(value)
+        cost = estimate_cost_usd(
+            getattr(usage, "prompt_tokens", 0) or 0,
+            getattr(usage, "completion_tokens", 0) or 0,
+        )
+        if cost is not None:
+            metrics["estimated_cost_usd"] = cost
+        log_metrics(run_id, metrics)
+    except Exception as exc:  # noqa: BLE001 -- see docstring: must not mask kickoff's error
+        print(f"Warning: could not record LLM usage metrics ({type(exc).__name__}: {exc})")
 
 
 def log_model_artifact(run_id: str | None, model: Any, artifact_path: str = "model") -> None:
