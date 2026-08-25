@@ -46,6 +46,24 @@ MODEL = os.getenv("MODEL", "gpt-4o")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL") or None
 LLM_API_KEY = os.getenv("LLM_API_KEY") or None
 
+# Azure AI Foundry. Set the endpoint copied from the Foundry portal (any of the
+# forms crew.foundry_base_url normalizes) and a key, and the crew runs against a
+# Foundry deployment. Takes precedence over LLM_BASE_URL when both are set.
+#
+# This deliberately reuses the OpenAI-compatible path rather than adding
+# crewai[azure-ai-inference] or crewai[litellm]: Foundry exposes an
+# OpenAI-compatible `/openai/v1` surface, so the provider CrewAI already ships
+# natively can talk to it unchanged. Given how much of this project's
+# dependency surface is already load-bearing (see pyproject.toml's numpy/numba
+# comments), not adding a heavy provider SDK for an endpoint that speaks a
+# protocol we already support is the cheaper and more stable trade.
+#
+# MODEL means different things per Foundry flavour, and this is the most common
+# misconfiguration: for an Azure OpenAI deployment it is the *deployment name*
+# you chose, not the model name; for Foundry Models it is the catalog model name.
+AZURE_FOUNDRY_ENDPOINT = os.getenv("AZURE_FOUNDRY_ENDPOINT") or None
+AZURE_FOUNDRY_API_KEY = os.getenv("AZURE_FOUNDRY_API_KEY") or None
+
 # Caps aggregate LLM calls per minute across the whole crew (CrewAI's RPMController).
 # Leave unset for no cap; set it to stay under a provider's free-tier rate limit.
 MAX_RPM = _env_int_or_none("MAX_RPM")
@@ -58,6 +76,12 @@ MAX_RPM = _env_int_or_none("MAX_RPM")
 # model-specific and go stale, so they belong in .env, not in code.
 LLM_PRICE_PER_1M_INPUT = _env_float_or_none("LLM_PRICE_PER_1M_INPUT")
 LLM_PRICE_PER_1M_OUTPUT = _env_float_or_none("LLM_PRICE_PER_1M_OUTPUT")
+
+# Shared key gating the HTTP tool service (ds_crew.service). Required to create a
+# run; creating one mints a per-run token that every subsequent tool call must
+# present. Left unset the service refuses to start, rather than defaulting to an
+# open endpoint that can mutate datasets and train models.
+SERVICE_API_KEY = os.getenv("SERVICE_API_KEY") or None
 
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
 MLFLOW_EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "structured-ml-crew")

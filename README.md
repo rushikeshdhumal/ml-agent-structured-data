@@ -364,6 +364,10 @@ src/ds_crew/
     eval_tools.py      Held-out evaluation
     explain_tools.py   SHAP + permutation attributions, surrogate, local examples
     logging_tools.py   MLflow helpers + the finalize_run tool
+  service/          Optional HTTP surface over the tool layer (see below)
+    app.py            FastAPI app; routes generated from the tool registry
+    registry.py       Which tools are published, read off the tool classes
+    __main__.py       `ds-crew-service` entrypoint
 tests/              Unit tests for every tool/guardrail/schema (no LLM calls)
 tests/e2e/          Full pipeline test; requires a live LLM key, opt-in via `-m e2e`
 ```
@@ -375,7 +379,9 @@ tests/e2e/          Full pipeline test; requires a live LLM key, opt-in via `-m 
 - **LLM** -- `MODEL`, provider-agnostic via CrewAI's native provider routing
   (`gpt-4o`, `anthropic/claude-sonnet-4-5-...`, `ollama/llama3`, ...), or
   `LLM_BASE_URL` + `LLM_API_KEY` for any other OpenAI-compatible endpoint
-  (e.g. NVIDIA NIM). `MAX_RPM` caps aggregate LLM calls/minute across the crew.
+  (e.g. NVIDIA NIM), or `AZURE_FOUNDRY_ENDPOINT` + `AZURE_FOUNDRY_API_KEY` for
+  Azure AI Foundry (see below). `MAX_RPM` caps aggregate LLM calls/minute
+  across the crew.
 - **MLflow** -- `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_NAME`.
 - **Guardrails/budgets** -- `AUTO_APPROVE`, `MAX_HPO_TRIALS`,
   `MAX_HPO_TIMEOUT_S`, `NEAR_PERFECT_THRESHOLD`, `RANDOM_SEED`,
@@ -384,10 +390,95 @@ tests/e2e/          Full pipeline test; requires a live LLM key, opt-in via `-m 
   `EXPLAIN_TOP_K_FEATURES`, `EXPLAIN_LOCAL_EXAMPLES`,
   `EXPLAIN_SURROGATE_MAX_DEPTH`.
 
+### Running against Azure AI Foundry
+
+Foundry exposes an OpenAI-compatible `/openai/v1` surface, so the crew targets it
+through the same native provider it already uses for NVIDIA NIM. **No extra
+dependency is required**: neither `crewai[azure-ai-inference]` nor
+`crewai[litellm]`.
+
+```dotenv
+MODEL=gpt-4o-ds-crew
+AZURE_FOUNDRY_ENDPOINT=https://my-resource.openai.azure.com
+AZURE_FOUNDRY_API_KEY=...
+```
+
+Paste the endpoint in whatever form the portal shows it (bare, or suffixed with
+`/models`, `/openai`, or `/openai/v1`); `crew.foundry_base_url` normalizes all of
+them. `AZURE_FOUNDRY_ENDPOINT` takes precedence over `LLM_BASE_URL`, and a missing
+key fails at crew-build time rather than as a 401 partway through a paid run.
+
+> **`MODEL` means different things per Foundry flavour**, and this is the usual
+> misconfiguration. For an **Azure OpenAI** deployment it is the *deployment name*
+> you chose, not the model name. For **Foundry Models** it is the catalog model
+> name (e.g. `Llama-3.3-70B-Instruct`).
+
+Every run tags MLflow with `llm_provider` (`native` / `custom_openai` /
+`azure_foundry`) and `model`, so token counts and `estimated_cost_usd` stay
+attributable when comparing providers.
+
+Only the version-less `/openai/v1` surface is supported. If you need the legacy
+`?api-version=` surface, set `LLM_BASE_URL` directly instead.
+
 > **numpy is capped below 2.5** in `pyproject.toml`. That bound comes from
 > `shap` -> `numba`, not from anything this project uses directly; numba 0.66.0
 > (the latest) requires `numpy<2.5`. Lift it only once numba ships numpy 2.5
 > support.
+
+## HTTP tool service
+
+The tool layer can also be served over HTTP, so callers outside this process (an
+Azure AI Foundry agent, or a second orchestrator) can invoke the same
+Pydantic-validated tools.
+
+```bash
+uv sync --extra service
+SERVICE_API_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))") \
+  uv run ds-crew-service --port 8000
+```
+
+Routes are **generated from the tool classes**, so the OpenAPI document at
+`/openapi.json` (the artifact a Foundry agent registers against) carries each
+tool's real argument schema and cannot drift from what the in-process
+orchestrator validates. Publishing a new tool means adding it to
+`service/registry.py` and nothing else.
+
+```
+POST   /runs                              create a run -> {run_id, run_token}
+GET    /runs/{run_id}                     stage flags + history
+DELETE /runs/{run_id}                     drop the run, revoke its token
+POST   /runs/{run_id}/tools/{tool_name}   invoke one tool
+```
+
+**The in-process orchestrator does not go through this.** `ds-crew` keeps calling
+tools in-process exactly as before, so the service adds no regression risk to the
+path that already works.
+
+### Authorization
+
+In-process, `run_id` is bound into each tool's constructor and never exposed as an
+LLM-callable argument, so a hallucinating or prompt-injected agent cannot address
+another run's data. Over HTTP `run_id` is necessarily part of the request, and a
+single shared key would let any authenticated caller reach any run, strictly
+weaker than what it replaces.
+
+So creating a run mints a **per-run token**, returned once. `SERVICE_API_KEY` gates
+run *creation*; the run token gates everything that touches a run's data. An agent
+handed run A's token cannot reach run B even if it invents B's id, and gets a 404
+rather than a 403 so the status code does not confirm B exists.
+
+Ordering stays a tool-level concern: calling `explain_models` before
+`evaluate_models` returns the same `{"error": ...}` payload an in-process agent
+would see, with a 200. An out-of-order call is a decision the tool makes, not an
+HTTP failure.
+
+### Single replica, for now
+
+`RunState` holds DataFrames and fitted models in the serving process's memory, and
+run tokens live alongside them, so the service runs **one worker** and does not
+scale horizontally. Scaling out means externalizing that state, and the
+`X_test`-scored-exactly-once invariant along with it, which is the part that needs
+real care rather than a storage swap.
 
 ## Limitations
 
@@ -401,7 +492,10 @@ Stated plainly, because knowing where a system stops is part of operating it.
   connectivity are all out of scope by design.
 - **Single-process.** `DataStore` holds the DataFrames for a run in memory in one
   process. That is fine for a CLI invocation and is *not* yet suitable for
-  distributed, multi-worker, or serverless execution.
+  distributed, multi-worker, or serverless execution. The HTTP tool service
+  inherits this: it runs one worker, and scaling it out requires externalizing
+  run state together with the `X_test`-scored-exactly-once invariant, which
+  becomes a concurrency problem rather than a storage one.
 - **Human gates block on stdin.** Interactive runs need a real terminal; they
   cannot be backgrounded or piped. Headless automation must use `AUTO_APPROVE=1`,
   which by design always finalizes as `rejected` since no human actually approved.

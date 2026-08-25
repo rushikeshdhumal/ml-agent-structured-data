@@ -17,7 +17,7 @@ import mlflow
 import pandas as pd
 
 from ds_crew import settings
-from ds_crew.crew import DsCrew
+from ds_crew.crew import DsCrew, active_llm_provider
 from ds_crew.state import get_data_store
 from ds_crew.tools.eda_tools import infer_task_type
 from ds_crew.tools.logging_tools import log_llm_usage
@@ -122,6 +122,13 @@ def main(argv: list[str] | None = None) -> int:
                 "dataset_hash": _dataset_hash(args.data),
                 "task_type": task_type,
                 "auto_approve": str(settings.AUTO_APPROVE).lower(),
+                # Which routing branch served this run, alongside the model id
+                # itself. Token counts and estimated_cost_usd are already logged
+                # (see log_llm_usage); without knowing which provider produced
+                # them, runs against NVIDIA NIM and Azure Foundry are not
+                # comparable, which is the main reason to be able to switch.
+                "llm_provider": active_llm_provider(),
+                "model": settings.MODEL,
             }
         )
         mlflow.log_params(

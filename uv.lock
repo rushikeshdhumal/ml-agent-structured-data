@@ -1870,16 +1870,26 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "fastapi" },
+    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-mock" },
     { name = "ruff" },
+    { name = "uvicorn" },
+]
+service = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "catboost", specifier = ">=1.2,<2" },
     { name = "crewai", extras = ["tools"], specifier = ">=1.15.1,<2" },
+    { name = "fastapi", marker = "extra == 'dev'", specifier = ">=0.115,<1" },
+    { name = "fastapi", marker = "extra == 'service'", specifier = ">=0.115,<1" },
+    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27,<1" },
     { name = "joblib", specifier = ">=1.4,<2" },
     { name = "lightgbm", specifier = ">=4.0,<5" },
     { name = "matplotlib", specifier = ">=3.9,<4" },
@@ -1897,9 +1907,11 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6,<1" },
     { name = "scikit-learn", specifier = ">=1.5,<2" },
     { name = "shap", specifier = ">=0.46,<1" },
+    { name = "uvicorn", marker = "extra == 'dev'", specifier = ">=0.30,<1" },
+    { name = "uvicorn", marker = "extra == 'service'", specifier = ">=0.30,<1" },
     { name = "xgboost", specifier = ">=2.0,<3" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["service", "dev"]
 
 [[package]]
 name = "mlflow"

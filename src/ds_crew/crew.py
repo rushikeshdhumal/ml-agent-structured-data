@@ -45,13 +45,79 @@ from ds_crew.tools.logging_tools import FinalizeRunTool
 from ds_crew.tools.model_tools import SetMetricTool, TrainCandidateModelsTool
 
 
+# Endpoint suffixes the Foundry portal hands out, all of which need rewriting to
+# the OpenAI-compatible base. Longest first: `/openai/v1` must be tried before
+# `/openai`, or the shorter match would leave a dangling `/v1`.
+_FOUNDRY_ENDPOINT_SUFFIXES = ("/openai/v1", "/openai", "/models")
+
+
+def foundry_base_url(endpoint: str) -> str:
+    """Normalize any Azure AI Foundry endpoint into its OpenAI-compatible base URL.
+
+    The portal shows several different endpoint forms for the same resource
+    (`https://<res>.services.ai.azure.com`, the same with `/models`,
+    `https://<res>.openai.azure.com`, ...) and none of them is the URL an
+    OpenAI-compatible client wants. Rather than making the operator work out
+    which suffix to paste, strip whatever they pasted back to the origin and
+    append the one path that works.
+
+    Targets the `/openai/v1` surface specifically, which is version-less by
+    design. The legacy `?api-version=` surface is deliberately unsupported here:
+    threading a query parameter through a base URL is fragile with OpenAI-style
+    clients that append paths to it, and LLM_BASE_URL remains available as an
+    escape hatch for anyone who genuinely needs the older surface.
+    """
+    trimmed = endpoint.strip().rstrip("/")
+    for suffix in _FOUNDRY_ENDPOINT_SUFFIXES:
+        if trimmed.endswith(suffix):
+            trimmed = trimmed[: -len(suffix)]
+            break
+    return f"{trimmed}/openai/v1"
+
+
+def active_llm_provider() -> str:
+    """Label for which routing branch `_build_llm` will take, tagged onto the
+    MLflow run so runs against different providers stay comparable -- the whole
+    point of being able to target Foundry is measuring it against NVIDIA NIM.
+    """
+    if settings.AZURE_FOUNDRY_ENDPOINT:
+        return "azure_foundry"
+    if settings.LLM_BASE_URL:
+        return "custom_openai"
+    return "native"
+
+
 def _build_llm() -> str | LLM:
     """MODEL alone (a bare/provider-prefixed string) covers CrewAI's built-in named
     providers (openai/anthropic/gemini/ollama/deepseek/...). LLM_BASE_URL opts into
     CrewAI's native `custom_openai` routing for any other OpenAI-compatible endpoint
     (e.g. NVIDIA NIM's https://integrate.api.nvidia.com/v1), passing the model id
     through unchanged and using LLM_API_KEY (or the endpoint's own key) for auth.
+
+    AZURE_FOUNDRY_ENDPOINT takes precedence over LLM_BASE_URL and reuses that same
+    `custom_openai` path -- Foundry speaks the OpenAI protocol, so it needs a URL
+    rewrite rather than a provider integration. Verified against CrewAI 1.15.4:
+    `custom_openai=True` resolves to the native `OpenAICompletion` client with
+    `provider='openai'`, so this adds no dependency. The named `azure`/`azure_ai`
+    providers would each pull in an SDK (crewai[azure-ai-inference] or
+    crewai[litellm]) for no gain over the protocol we already speak.
     """
+    if settings.AZURE_FOUNDRY_ENDPOINT:
+        if not settings.AZURE_FOUNDRY_API_KEY:
+            # Fail loudly at build time rather than letting every agent turn die
+            # on an opaque 401 from Azure, which is a genuinely expensive thing
+            # to debug from the far side of an LLM call.
+            raise ValueError(
+                "AZURE_FOUNDRY_ENDPOINT is set but AZURE_FOUNDRY_API_KEY is empty. "
+                "Set the key from the Foundry portal, or unset the endpoint to fall "
+                "back to MODEL/LLM_BASE_URL routing."
+            )
+        return LLM(
+            model=settings.MODEL,
+            base_url=foundry_base_url(settings.AZURE_FOUNDRY_ENDPOINT),
+            api_key=settings.AZURE_FOUNDRY_API_KEY,
+            custom_openai=True,
+        )
     if not settings.LLM_BASE_URL:
         return settings.MODEL
     return LLM(
