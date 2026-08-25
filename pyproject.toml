@@ -3,7 +3,14 @@ name = "ml-agent-structured-data"
 version = "0.1.0"
 description = "DS-Crew: a CrewAI multi-agent system covering the data science lifecycle for structured data: EDA, cleaning, feature engineering, model selection, HPO, evaluation, and metadata logging."
 readme = "README.md"
-requires-python = ">=3.10,<3.14"
+# Floor is set by shap, and deliberately claims only what is actually tested.
+# shap 0.52.0 -- the release explain_tools.py's SHAP output-shape handling was
+# written and live-verified against -- itself requires >=3.12. Older Pythons
+# silently resolve to older shap (3.11 -> 0.51.0, 3.10 -> 0.49.1), whose
+# TreeExplainer return shapes differ, so supporting them would mean shipping
+# explainability against versions nobody has exercised. 3.10 additionally fails
+# outright: crewai -> chromadb -> onnxruntime has no cp310 wheel above 1.23.x.
+requires-python = ">=3.12,<3.14"
 license = "MIT"
 authors = [{ name = "Rushikesh Dhumal" }]
 dependencies = [
@@ -31,11 +38,12 @@ dependencies = [
     "shap>=0.46,<1",
     # Not imported directly -- it is shap's transitive dependency, floored here
     # to steer uv's *universal* resolution. Resolving for a single interpreter
-    # picks numba 0.66.0 correctly, but resolving across all of requires-python
-    # at once, uv forks and selects numba 0.53.1 for python>=3.11 (a release
-    # predating 3.11 entirely), whose ancient llvmlite then fails to build.
-    # This floor removes that branch. Drop it if uv's forking resolver stops
-    # producing that result.
+    # picks a current numba correctly, but resolving across the whole
+    # requires-python range at once, uv forks and selects numba 0.53.1 (a 2021
+    # release), whose ancient llvmlite then fails to build on any modern Python.
+    # Re-verified after narrowing requires-python to >=3.12: still reproducible,
+    # so this floor is still load-bearing. Drop it only if a `uv pip compile
+    # --universal` run without it stops producing numba 0.53.1.
     "numba>=0.60",
 ]
 
@@ -103,4 +111,4 @@ filterwarnings = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
