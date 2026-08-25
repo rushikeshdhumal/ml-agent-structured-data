@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref -- the suite is CPU-bound and slow,
+# so queued duplicates waste minutes without adding signal.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Generous relative to the ~7 min this suite takes on a 16-core dev box.
+    # GitHub runners have far fewer cores and the tests are CPU-bound (they
+    # train real models rather than mocking them, with scikit-learn using
+    # n_jobs=-1), so a slower wall-clock here is expected, not a hang. This cap
+    # exists to catch a genuine hang, not to police normal runtime.
+    timeout-minutes: 45
+
+    strategy:
+      # Report both versions independently. The 3.10 job is the more likely to
+      # fail and the more informative when it does (see below), so it must not
+      # be cancelled by an unrelated 3.13 failure.
+      fail-fast: false
+      matrix:
+        # The bookends of `requires-python = ">=3.10,<3.14"` in pyproject.toml.
+        # These are not cosmetic: dependency resolution genuinely differs across
+        # the range, because shap -> numba caps numpy. Resolved via
+        # `uv pip compile`, py3.10 gets shap 0.49.1 / numpy 2.2.6 while py3.13
+        # gets shap 0.52.0 / numpy 2.4.6 -- materially different trees. Testing
+        # only the version we develop on would leave the 3.10 support claim
+        # unverified. If 3.10 ever proves genuinely unsupportable, narrow
+        # requires-python to match reality rather than deleting this job.
+        python-version: ["3.10", "3.13"]
+
+    name: test (py${{ matrix.python-version }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Test
+        # Bare `pytest` is deliberate. pyproject.toml's addopts already carries
+        # `-m 'not e2e'`, which excludes tests/e2e/ -- that suite calls a live
+        # LLM and needs a real API key, so it cannot run here and is executed
+        # manually instead. Do not add `-m e2e` to this workflow.
+        run: uv run pytest
