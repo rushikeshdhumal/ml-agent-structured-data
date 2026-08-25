@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/rushikeshdhumal/ml-agent-structured-data/actions/workflows/ci.yml/badge.svg)](https://github.com/rushikeshdhumal/ml-agent-structured-data/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
 [![Built with CrewAI](https://img.shields.io/badge/built%20with-CrewAI-6f42c1.svg)](https://docs.crewai.com)
 
 **Letting an autonomous agent near real data is a governance problem before it
@@ -410,6 +410,17 @@ Stated plainly, because knowing where a system stops is part of operating it.
 - **SHAP is skipped for multiclass CatBoost.** Upstream `TreeExplainer` segfaults
   there, so it is guarded pre-emptively and that model falls back to permutation
   importance. Binary CatBoost is unaffected.
+- **Python 3.12 or 3.13 only.** The floor is set by `shap`: version 0.52.0, the
+  release the explainability layer's output-shape handling is verified against,
+  itself requires >=3.12. Older Pythons silently resolve to older `shap`
+  (3.11 gets 0.51.0, 3.10 gets 0.49.1) whose `TreeExplainer` return shapes
+  differ, so supporting them would mean shipping explainability against
+  untested versions. Python 3.10 additionally cannot install at all --
+  `crewai -> chromadb -> onnxruntime` has no cp310 wheel above 1.23.x.
+  One platform exception remains: **Intel macOS** (`darwin`/`x86_64`) resolves
+  `shap` 0.49.1 regardless of Python version, because shap caps `numba<0.63`
+  there. CI does not cover that platform, so explainability on Intel Macs is
+  unverified; Apple Silicon, Linux and Windows all get 0.52.0.
 - **`numpy` is pinned `<2.5`**, inherited from `shap -> numba`. Not a constraint
   this project needs directly; see the note under Configuration.
 - **LLM cost is not yet a first-class budget.** Trial counts, ensemble members and
