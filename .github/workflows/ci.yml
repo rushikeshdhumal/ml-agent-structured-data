@@ -22,20 +22,20 @@ jobs:
     timeout-minutes: 45
 
     strategy:
-      # Report both versions independently. The 3.10 job is the more likely to
-      # fail and the more informative when it does (see below), so it must not
-      # be cancelled by an unrelated 3.13 failure.
+      # Report both versions independently, so one failing does not hide the
+      # other's result.
       fail-fast: false
       matrix:
-        # The bookends of `requires-python = ">=3.10,<3.14"` in pyproject.toml.
-        # These are not cosmetic: dependency resolution genuinely differs across
-        # the range, because shap -> numba caps numpy. Resolved via
-        # `uv pip compile`, py3.10 gets shap 0.49.1 / numpy 2.2.6 while py3.13
-        # gets shap 0.52.0 / numpy 2.4.6 -- materially different trees. Testing
-        # only the version we develop on would leave the 3.10 support claim
-        # unverified. If 3.10 ever proves genuinely unsupportable, narrow
-        # requires-python to match reality rather than deleting this job.
-        python-version: ["3.10", "3.13"]
+        # The bookends of `requires-python = ">=3.12,<3.14"` in pyproject.toml.
+        # This matrix is not cosmetic: dependency resolution genuinely differs
+        # per Python version here, and an earlier 3.10 job in this same matrix
+        # is what surfaced why the floor is 3.12 rather than 3.10 -- crewai ->
+        # chromadb -> onnxruntime has no cp310 wheel above 1.23.x, and more
+        # importantly each Python resolves a different shap (3.10 -> 0.49.1,
+        # 3.11 -> 0.51.0, 3.12+ -> 0.52.0), while explain_tools.py's SHAP
+        # output-shape handling is only verified against 0.52.0. Keep both jobs:
+        # 3.12 is the floor being claimed and nobody develops on it.
+        python-version: ["3.12", "3.13"]
 
     name: test (py${{ matrix.python-version }})
 
