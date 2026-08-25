@@ -78,6 +78,28 @@ markers = [
 # Re-benchmark before reaching for it again; don't assume it helps.
 addopts = "-m 'not e2e'"
 testpaths = ["tests"]
+# Silence third-party Pydantic deprecation noise only. A clean run otherwise
+# emits ~190 warnings from crewai/mlflow internals, which buries anything this
+# project actually emits and makes a green run look untidy for no reason.
+# Scoped by module on purpose: a blanket `ignore::DeprecationWarning` would also
+# hide deprecations raised by ds_crew's own code, which is exactly the signal
+# worth keeping.
+# Matched by message, not by module: module-scoped filters were tried and do
+# nothing here, because crewai monkeypatches warnings.warn with an extra
+# stacklevel, so the warning is attributed to the wrong module and
+# `ignore::DeprecationWarning:crewai.agent.core` never matches.
+filterwarnings = [
+    # crewai's own field deprecations for options this project never sets
+    # (function_calling_llm, allow_code_execution, reasoning). The second
+    # pattern is broad because pydantic's @deprecated marker emits the literal
+    # message "deprecated" with nothing to key off; accepted knowingly, since
+    # ds_crew emits no deprecations of its own for it to swallow.
+    "ignore:function_calling_llm is deprecated:DeprecationWarning",
+    "ignore:deprecated:DeprecationWarning",
+    # mlflow's internal pydantic deprecations
+    "ignore:.*class-based `config`.*:DeprecationWarning",
+    "ignore:.*`@model_validator` with mode=.after.*:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100
