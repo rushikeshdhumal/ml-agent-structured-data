@@ -21,6 +21,7 @@ from ds_crew.crew import DsCrew, active_llm_provider
 from ds_crew.state import get_data_store
 from ds_crew.tools.eda_tools import infer_task_type
 from ds_crew.tools.logging_tools import log_llm_usage
+from ds_crew.usage_listener import PerTaskUsageListener, log_per_task_usage
 from ds_crew.tools.model_tools import ALLOWED_METRICS, METRIC_BY_TASK
 
 # Windows' default stdout/stderr encoding for a non-console-attached process
@@ -140,6 +141,10 @@ def main(argv: list[str] | None = None) -> int:
                 "n_cols": len(df.columns),
             }
         )
+        # Registered before the crew is built so it cannot miss an early event.
+        # It attributes each LLM call to the task and agent that made it, which
+        # crew-level totals cannot do -- see usage_listener.py.
+        usage_listener = PerTaskUsageListener()
         # Built before the try so the `finally` can still read usage off it if
         # kickoff raises -- a run that burned tokens and then crashed is exactly
         # the one whose spend needs recording.
@@ -153,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             raise
         finally:
             log_llm_usage(state.mlflow_run_id, crew, time.perf_counter() - started)
+            log_per_task_usage(state.mlflow_run_id, usage_listener)
 
     print(f"Run {run_id} complete. MLflow tracking URI: {settings.MLFLOW_TRACKING_URI}")
     return 0
