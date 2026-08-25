@@ -7,6 +7,34 @@ import pytest
 from ds_crew.state import get_data_store, reset_data_store
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _cheap_catboost_for_tests():
+    """Cut CatBoost's boosting iterations for the whole test session.
+
+    Measured on this suite: at the fixtures' n=200, a single CatBoost fit takes
+    ~0.92s against ~0.06s for every other candidate combined -- roughly 85% of
+    all model-fit time in one estimator. Since model selection, HPO, ensembling
+    and explainability each fit it repeatedly (cross_val_predict alone is
+    folds x members), that one default dominates the suite's runtime.
+
+    300 iterations is the right *production* default and stays that way; no
+    test here asserts anything about convergence quality, only that leaderboards
+    sort, ensembles build, and reports come back well-formed -- all of which 30
+    iterations demonstrates identically. Shrinking the fixtures instead would be
+    the wrong lever: at n=200 per-fit overhead already dominates row count (4x
+    less data buys ~1.9x, 10x fewer iterations buys ~11x), and those fixtures
+    deliberately carry nulls, a constant column, a high-cardinality column, a
+    datetime and string labels, which is what makes the cleaning and feature
+    stages genuinely exercised.
+    """
+    from ds_crew.tools.model_tools import BASE_MODEL_KWARGS
+
+    original = BASE_MODEL_KWARGS["catboost"]["iterations"]
+    BASE_MODEL_KWARGS["catboost"]["iterations"] = 30
+    yield
+    BASE_MODEL_KWARGS["catboost"]["iterations"] = original
+
+
 @pytest.fixture(autouse=True)
 def _clean_data_store():
     reset_data_store()
