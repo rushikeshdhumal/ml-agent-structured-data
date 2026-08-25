@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from ds_crew import settings
 from ds_crew.crew import DsCrew
 from ds_crew.state import get_data_store
 from ds_crew.tools.eda_tools import infer_task_type
+from ds_crew.tools.logging_tools import log_llm_usage
 from ds_crew.tools.model_tools import ALLOWED_METRICS, METRIC_BY_TASK
 
 # Windows' default stdout/stderr encoding for a non-console-attached process
@@ -131,12 +133,19 @@ def main(argv: list[str] | None = None) -> int:
                 "n_cols": len(df.columns),
             }
         )
+        # Built before the try so the `finally` can still read usage off it if
+        # kickoff raises -- a run that burned tokens and then crashed is exactly
+        # the one whose spend needs recording.
+        crew = DsCrew(run_id=run_id).crew()
+        started = time.perf_counter()
         try:
-            DsCrew(run_id=run_id).crew().kickoff(inputs={"run_id": run_id, "target": args.target})
+            crew.kickoff(inputs={"run_id": run_id, "target": args.target})
             mlflow.set_tag("status", "completed")
         except Exception:
             mlflow.set_tag("status", "failed")
             raise
+        finally:
+            log_llm_usage(state.mlflow_run_id, crew, time.perf_counter() - started)
 
     print(f"Run {run_id} complete. MLflow tracking URI: {settings.MLFLOW_TRACKING_URI}")
     return 0
