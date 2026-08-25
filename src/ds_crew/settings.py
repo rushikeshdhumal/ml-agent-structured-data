@@ -31,6 +31,11 @@ def _env_int_or_none(name: str) -> int | None:
     return int(val) if val else None
 
 
+def _env_float_or_none(name: str) -> float | None:
+    val = os.getenv(name)
+    return float(val) if val else None
+
+
 MODEL = os.getenv("MODEL", "gpt-4o")
 
 # Optional: point MODEL at any OpenAI-compatible endpoint (NVIDIA NIM, Together,
@@ -44,6 +49,15 @@ LLM_API_KEY = os.getenv("LLM_API_KEY") or None
 # Caps aggregate LLM calls per minute across the whole crew (CrewAI's RPMController).
 # Leave unset for no cap; set it to stay under a provider's free-tier rate limit.
 MAX_RPM = _env_int_or_none("MAX_RPM")
+
+# Optional per-million-token rates for the configured MODEL, used only to turn
+# the token counts CrewAI reports into an estimated USD figure in MLflow. Left
+# unset by default and deliberately so: with no rates configured no cost metric
+# is logged at all, which honestly represents a free-tier endpoint (e.g. NVIDIA
+# NIM) rather than asserting a misleading $0.00. Rates are provider- and
+# model-specific and go stale, so they belong in .env, not in code.
+LLM_PRICE_PER_1M_INPUT = _env_float_or_none("LLM_PRICE_PER_1M_INPUT")
+LLM_PRICE_PER_1M_OUTPUT = _env_float_or_none("LLM_PRICE_PER_1M_OUTPUT")
 
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
 MLFLOW_EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "structured-ml-crew")
