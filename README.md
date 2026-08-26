@@ -368,6 +368,7 @@ src/ds_crew/
   service/          Optional HTTP surface over the tool layer (see below)
     app.py            FastAPI app; routes generated from the tool registry
     registry.py       Which tools are published, read off the tool classes
+    mcp_app.py        MCP surface over the same registry (what Foundry agents use)
     __main__.py       `ds-crew-service` entrypoint
 docs/
   model-selection.md  Measured per-agent cost + which model each agent should run
@@ -451,7 +452,44 @@ POST   /runs                              create a run -> {run_id, run_token}
 GET    /runs/{run_id}                     stage flags + history
 DELETE /runs/{run_id}                     drop the run, revoke its token
 POST   /runs/{run_id}/tools/{tool_name}   invoke one tool
+GET    /openapi.json                      full spec (operator + tools)
+GET    /openapi-agent.json                tools only -- for OpenAPI-consuming agents
+POST   /mcp                               MCP surface -- what Foundry agents use
 ```
+
+### Two protocols, one registry
+
+The same ten tools are served two ways, both generated from
+`service/registry.py`:
+
+| Surface | Endpoint | Who uses it |
+|---|---|---|
+| REST / OpenAPI | `/runs/...`, spec at `/openapi.json` | humans, scripts, run lifecycle |
+| **MCP** | `/mcp` | **hosted agents (Azure AI Foundry)** |
+
+**Azure AI Foundry needs the MCP one.** Its gpt-5-family deployments advertise
+`agentsV2` and offer the `mcp` custom tool but *not* `openapi`, so the REST spec
+is unusable from a Foundry agent regardless of how well-formed it is. MCP is
+also the only tool type carrying `require_approval`, which is what preserves the
+human approval gates.
+
+Both surfaces run in one process on one port, so a single tunnel or ingress
+exposes both.
+
+### Two specs, on purpose
+
+`/openapi-agent.json` is `/openapi.json` filtered to `/runs/{run_id}/tools/*`.
+Register that one with any OpenAPI-consuming agent. Such a platform turns
+*every* operation in a spec into a callable tool, so handing over the full spec
+would let an agent create runs or `DELETE` someone else's. Those are operator
+actions, and run lifecycle is not something an agent should reach. The MCP
+surface gets the same restriction a different way: an agent's `allowed_tools`
+lists only the tools that agent needs.
+
+Set `SERVICE_PUBLIC_URL` on both counts. It supplies the spec's absolute
+`servers` URL, and it seeds the MCP transport's host allowlist: the MCP SDK
+enables DNS-rebinding protection by default with an empty allowlist and answers
+any unrecognized `Host` with **421**, which rejects a hosted agent outright.
 
 **The in-process orchestrator does not go through this.** `ds-crew` keeps calling
 tools in-process exactly as before, so the service adds no regression risk to the
@@ -469,6 +507,15 @@ So creating a run mints a **per-run token**, returned once. `SERVICE_API_KEY` ga
 run *creation*; the run token gates everything that touches a run's data. An agent
 handed run A's token cannot reach run B even if it invents B's id, and gets a 404
 rather than a 403 so the status code does not confirm B exists.
+
+**One deliberate weakening, for hosted agents.** Tool calls also accept the
+service API key as a fallback credential, because Azure AI Foundry's OpenAPI
+tool supports only *static* auth (anonymous / connection / managed identity)
+with no per-request header, so a per-run token is unrepresentable there.
+Rejecting the key would leave every tool endpoint unreachable from a Foundry
+agent. The cost is that an API-key caller can address any run in the process:
+cross-run isolation degrades to service-level isolation on that path. Callers
+that can carry a run token still get the stronger guarantee.
 
 Ordering stays a tool-level concern: calling `explain_models` before
 `evaluate_models` returns the same `{"error": ...}` payload an in-process agent

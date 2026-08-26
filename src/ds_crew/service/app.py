@@ -1,10 +1,15 @@
 """FastAPI surface over the deterministic tool layer.
 
 Routes are generated from `registry.TOOL_CLASSES`, so the OpenAPI document this
-serves at `/openapi.json` -- the artifact an Azure AI Foundry agent registers
-against -- is derived from the same Pydantic argument schemas the in-process
-orchestrator validates against. There is no second copy of a tool's contract to
-keep in sync.
+serves at `/openapi.json` is derived from the same Pydantic argument schemas the
+in-process orchestrator validates against. There is no second copy of a tool's
+contract to keep in sync.
+
+This module also mounts the **MCP** surface (`mcp_app.py`) at `/mcp`, over that
+same registry. That is the surface Azure AI Foundry actually uses: its
+gpt-5-family deployments advertise `agentsV2` and offer the `mcp` custom tool
+but *not* `openapi`. The REST/OpenAPI surface remains the human- and
+script-facing API, and is what `POST /runs` lives on.
 
 Deliberately no `from __future__ import annotations` in this module. That import
 turns every annotation into a string, and the per-tool request-body type is
@@ -21,23 +26,37 @@ another run's data (see state.py). Over HTTP `run_id` is necessarily part of the
 request, and a single shared API key would hand every authenticated caller access
 to every run -- strictly weaker than what it replaces.
 
-So creating a run mints a **per-run token**, returned once, and every tool call
-must present it. An agent handed run A's token cannot reach run B even if it
-invents B's id. `SERVICE_API_KEY` gates run *creation*; the run token gates
-everything that touches a run's data.
+So creating a run mints a **per-run token**, returned once. An agent handed run
+A's token cannot reach run B even if it invents B's id. `SERVICE_API_KEY` gates
+run *creation*; the run token gates everything that touches a run's data.
+
+**One deliberate weakening.** Tool calls also accept `SERVICE_API_KEY` as a
+fallback credential, on both the REST and MCP surfaces, because Foundry can
+present only static credentials: its OpenAPI tool offers anonymous / connection
+/ managed-identity auth and its MCP tool a fixed `headers` map, neither of which
+can carry a value minted per run. Refusing the key would leave the tools
+unreachable from a hosted agent entirely. The cost is that an API-key caller can
+address any run in this process, so cross-run isolation degrades to
+service-level isolation on that path; run-token callers keep the stronger
+guarantee.
 """
 
+import contextlib
+import copy
 import io
 import json
 import secrets
 import threading
+from collections.abc import AsyncIterator
 from typing import Any, Literal
 
 import pandas as pd
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 from ds_crew import settings
+from ds_crew.service.mcp_app import RequireApiKeyASGI, build_mcp_server
 from ds_crew.service.registry import (
     TOOL_CLASSES,
     args_schema_of,
@@ -110,6 +129,20 @@ class RunStatusResponse(BaseModel):
     history: list[dict[str, Any]]
 
 
+# Declared as security schemes rather than plain `Header(...)` parameters so they
+# appear under `components.securitySchemes` in the generated spec. Foundry's
+# OpenAPI tool binds its `connection` auth to a declared scheme; with none
+# declared there is nothing for it to attach a credential to.
+# `auto_error=False` on both: a missing credential should be a 401, which is what
+# it actually is, rather than the 422 FastAPI returns when a required header is
+# treated as a validation failure.
+# `scheme_name` is explicit because FastAPI keys securitySchemes by it and
+# defaults it to the class name -- two APIKeyHeader instances would otherwise
+# collide under one entry and only one header would appear in the spec.
+_api_key_scheme = APIKeyHeader(name="X-API-Key", scheme_name="ServiceApiKey", auto_error=False)
+_run_token_scheme = APIKeyHeader(name="X-Run-Token", scheme_name="RunToken", auto_error=False)
+
+
 def _tool_result_to_json(raw: str) -> Any:
     """Tools return a JSON string. Parse it so the HTTP response is real JSON
     rather than a quoted blob, but never fail on a tool that returns plain text.
@@ -121,7 +154,24 @@ def _tool_result_to_json(raw: str) -> Any:
 
 
 def create_app() -> FastAPI:
+    # Built before the FastAPI app because its session manager has to be started
+    # from the app's lifespan, and `session_manager` only exists once
+    # `streamable_http_app()` has been called.
+    mcp_server = build_mcp_server()
+    mcp_asgi = mcp_server.streamable_http_app()
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        """Run the MCP session manager for the lifetime of the API.
+
+        Mounting a Starlette sub-application does not run its lifespan, so
+        without this the MCP endpoint accepts connections and then hangs.
+        """
+        async with mcp_server.session_manager.run():
+            yield
+
     app = FastAPI(
+        lifespan=lifespan,
         title="DS-Crew tool service",
         version="0.1.0",
         description=(
@@ -129,30 +179,96 @@ def create_app() -> FastAPI:
             "lifecycle. Create a run, then drive it one tool at a time. Tools "
             "enforce their own ordering and refuse repeat application."
         ),
+        # Absolute base URL for Foundry's OpenAPI tool. Omitted entirely when
+        # unset rather than emitted empty, so a local spec stays relative.
+        #
+        # rstrip("/") is load-bearing, not tidiness. Clients concatenate this
+        # with operation paths that already begin with "/", so a trailing slash
+        # yields "https://host//runs/..." -- verified to 404 against this very
+        # service. Dev tunnel URLs change every session and a browser hands you
+        # the trailing slash every time, so normalizing here is the only place
+        # that stays fixed.
+        servers=(
+            [{"url": settings.SERVICE_PUBLIC_URL.rstrip("/")}]
+            if settings.SERVICE_PUBLIC_URL
+            else None
+        ),
     )
+    # Azure AI Foundry's OpenAPI tool has historically required OpenAPI 3.0.x,
+    # while FastAPI emits 3.1.0 by default. Pinning costs nothing here (this
+    # spec uses no 3.1-only constructs) and avoids an import that fails for a
+    # reason nobody would guess from the error. Re-test on a Foundry upgrade and
+    # drop the pin once 3.1 is accepted.
+    app.openapi_version = "3.0.3"
     tokens = RunTokenRegistry()
     app.state.run_tokens = tokens
 
-    def require_api_key(x_api_key: str = Header(..., alias="X-API-Key")) -> None:
+    def _api_key_ok(presented: str | None) -> bool:
+        if not settings.SERVICE_API_KEY or not presented:
+            return False
+        return secrets.compare_digest(presented, settings.SERVICE_API_KEY)
+
+    def require_api_key(x_api_key: str | None = Depends(_api_key_scheme)) -> None:
         if not settings.SERVICE_API_KEY:
             raise HTTPException(
                 status_code=503,
                 detail="SERVICE_API_KEY is not configured; the service refuses to run open.",
             )
-        if not secrets.compare_digest(x_api_key, settings.SERVICE_API_KEY):
-            raise HTTPException(status_code=401, detail="Invalid API key.")
+        if not _api_key_ok(x_api_key):
+            raise HTTPException(status_code=401, detail="Invalid or missing API key.")
 
-    def require_run_token(run_id: str, x_run_token: str = Header(..., alias="X-Run-Token")) -> str:
-        if not tokens.verify(run_id, x_run_token):
-            # 404 rather than 403 on purpose: a caller holding no valid token for
-            # this run should not be able to use the status code to learn whether
-            # the run exists.
-            raise HTTPException(status_code=404, detail=f"Unknown run '{run_id}'.")
-        return run_id
+    def require_run_token(
+        run_id: str,
+        x_run_token: str | None = Depends(_run_token_scheme),
+        x_api_key: str | None = Depends(_api_key_scheme),
+    ) -> str:
+        """Authorize access to one run's data by **either** credential.
 
-    @app.get("/healthz", tags=["ops"])
+        The run token is the stronger of the two and stays the preferred path: it
+        is minted per run, so a caller holding run A's token cannot reach run B
+        even knowing its id. That preserves the in-process property where
+        `run_id` is constructor-bound and never LLM-visible.
+
+        The service API key is accepted as a fallback **because Azure AI Foundry
+        cannot present the stronger one**. Its OpenAPI tool supports only static
+        auth (anonymous / connection / managed_identity) with no per-request
+        header, so a per-run credential is unrepresentable there. Rejecting the
+        API key would leave every tool endpoint unreachable from a Foundry agent.
+
+        The cost is real and worth naming: an API-key caller can address any run
+        in the process, so cross-run isolation degrades to service-level
+        isolation on that path. Callers that can carry a run token (the MCP
+        facade, direct clients) still get the stronger guarantee.
+        """
+        if tokens.verify(run_id, x_run_token) or _api_key_ok(x_api_key):
+            return run_id
+        # 404 rather than 403 on purpose: a caller holding neither credential
+        # should not be able to use the status code to learn whether the run
+        # exists.
+        raise HTTPException(status_code=404, detail=f"Unknown run '{run_id}'.")
+
+    @app.get("/healthz", tags=["ops"], operation_id="healthz")
     def healthz() -> dict[str, Any]:
         return {"status": "ok", "tools": [tool_name_of(c) for c in TOOL_CLASSES]}
+
+    @app.get("/openapi-agent.json", include_in_schema=False, tags=["ops"])
+    def agent_openapi() -> dict[str, Any]:
+        """The subset of this API an agent is allowed to call.
+
+        Register **this** with a Foundry agent, not `/openapi.json`. Foundry
+        turns every operation in a spec into a callable tool, and the full spec
+        includes run lifecycle management: an agent given it could create runs
+        or `DELETE` someone else's. Those are operator actions, and an agent
+        having them would widen exactly the blast radius that accepting the
+        service API key on tool calls already widened.
+
+        Filtering to `/runs/{run_id}/tools/*` leaves the ten deterministic tools
+        and nothing else. Unused component schemas are left in place, which
+        OpenAPI permits and which keeps this a filter rather than a rewrite.
+        """
+        full = copy.deepcopy(app.openapi())
+        full["paths"] = {p: ops for p, ops in full["paths"].items() if "/tools/" in p}
+        return full
 
     @app.post(
         "/runs",
@@ -230,7 +346,22 @@ def create_app() -> FastAPI:
             name=tool_name_of(tool_cls),
             summary=tool_name_of(tool_cls),
             description=description_of(tool_cls),
+            # Foundry surfaces `operationId` to the model as the tool's name.
+            # FastAPI would otherwise derive
+            # `eda_summary_runs__run_id__tools_eda_summary_post` from the route,
+            # which is what an agent would then have to reason about. Using the
+            # tool's own name keeps the LLM-facing surface identical to the
+            # in-process one.
+            operation_id=tool_name_of(tool_cls),
         )
+
+    # Mounted at "/" rather than at MCP_MOUNT_PATH, and last. The MCP app's own
+    # route already carries the full "/mcp" path, so mounting it under that
+    # prefix would serve it at "/mcp/mcp"; mounting a sub-app whose inner route
+    # is "/" instead makes Starlette 307-redirect "/mcp" to "/mcp/", which a
+    # client posting JSON-RPC may not follow. Registering last means FastAPI
+    # matches its own routes first and only unmatched paths reach the mount.
+    app.mount("/", RequireApiKeyASGI(mcp_asgi))
 
     return app
 

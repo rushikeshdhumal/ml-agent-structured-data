@@ -83,6 +83,14 @@ LLM_PRICE_PER_1M_OUTPUT = _env_float_or_none("LLM_PRICE_PER_1M_OUTPUT")
 # open endpoint that can mutate datasets and train models.
 SERVICE_API_KEY = os.getenv("SERVICE_API_KEY") or None
 
+# Absolute public base URL the service is reachable at, emitted as the OpenAPI
+# `servers` entry. Required by Azure AI Foundry's OpenAPI tool, which resolves
+# operation paths against it and has no other way to learn the host: the spec
+# FastAPI generates carries only relative paths. Set it to whatever fronts the
+# service (a dev tunnel while iterating, a Container Apps ingress once deployed).
+# Unset is fine for local use, where a relative spec works.
+SERVICE_PUBLIC_URL = os.getenv("SERVICE_PUBLIC_URL") or None
+
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
 MLFLOW_EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "structured-ml-crew")
 

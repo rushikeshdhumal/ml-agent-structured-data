@@ -61,15 +61,106 @@ def test_openapi_exposes_each_tools_own_argument_schema(client):
 
 
 # ----------------------------------------------------------------------
+# Azure AI Foundry compatibility
+#
+# Foundry consumes the generated spec directly, so these assert the properties
+# it needs. Each one failed on the first attempt at wiring an agent.
+# ----------------------------------------------------------------------
+
+
+def test_spec_is_openapi_30_not_31(client):
+    # Azure's OpenAPI tool has historically rejected 3.1.x, which FastAPI emits
+    # by default. Drop the pin in app.py once Foundry accepts 3.1, not before.
+    assert client.get("/openapi.json").json()["openapi"].startswith("3.0")
+
+
+def test_spec_declares_an_absolute_server_url_when_configured(monkeypatch, classification_df):
+    monkeypatch.setattr(settings, "SERVICE_API_KEY", API_KEY)
+    monkeypatch.setattr(settings, "SERVICE_PUBLIC_URL", "https://tunnel.example.dev")
+    spec = TestClient(create_app()).get("/openapi.json").json()
+    # Foundry resolves operation paths against this; FastAPI emits only relative
+    # paths otherwise and the agent has no way to learn the host.
+    assert spec["servers"] == [{"url": "https://tunnel.example.dev"}]
+
+
+def test_server_url_trailing_slash_is_stripped(monkeypatch):
+    """A trailing slash in the server URL yields 404s, not cosmetic ugliness.
+
+    Operation paths already begin with "/", so a client concatenating them onto
+    "https://host/" requests "https://host//runs/..." which this service 404s.
+    Dev tunnel URLs rotate every session and a browser always supplies the
+    trailing slash, so normalization has to live here.
+    """
+    monkeypatch.setattr(settings, "SERVICE_API_KEY", API_KEY)
+    monkeypatch.setattr(settings, "SERVICE_PUBLIC_URL", "https://abc-8000.use2.devtunnels.ms/")
+    spec = TestClient(create_app()).get("/openapi.json").json()
+    assert spec["servers"] == [{"url": "https://abc-8000.use2.devtunnels.ms"}]
+
+
+def test_spec_omits_servers_when_no_public_url_is_set(monkeypatch):
+    monkeypatch.setattr(settings, "SERVICE_API_KEY", API_KEY)
+    monkeypatch.setattr(settings, "SERVICE_PUBLIC_URL", None)
+    spec = TestClient(create_app()).get("/openapi.json").json()
+    assert "servers" not in spec or not spec["servers"]
+
+
+def test_both_credential_headers_appear_as_distinct_security_schemes(client):
+    schemes = client.get("/openapi.json").json()["components"]["securitySchemes"]
+    # Both are APIKeyHeader instances and FastAPI keys schemes by name, so
+    # without explicit scheme_name they collapse into one entry and one of the
+    # two headers silently vanishes from the spec.
+    assert set(schemes) == {"ServiceApiKey", "RunToken"}
+    assert schemes["ServiceApiKey"]["name"] == "X-API-Key"
+    assert schemes["RunToken"]["name"] == "X-Run-Token"
+
+
+def test_tool_operation_ids_are_the_tool_names(client):
+    # Foundry shows operationId to the model as the tool name. FastAPI's derived
+    # `eda_summary_runs__run_id__tools_eda_summary_post` would be what an agent
+    # has to reason about instead.
+    spec = client.get("/openapi.json").json()
+    for tool_cls in TOOL_CLASSES:
+        name = tool_name_of(tool_cls)
+        op = spec["paths"][f"/runs/{{run_id}}/tools/{name}"]["post"]
+        assert op["operationId"] == name
+
+
+def test_agent_spec_exposes_only_the_tools(client):
+    """The spec handed to an agent must not carry run lifecycle operations.
+
+    Foundry turns every operation in a registered spec into a callable tool, so
+    the full spec would let an agent create runs or DELETE someone else's.
+    Those are operator actions.
+    """
+    agent_spec = client.get("/openapi-agent.json").json()
+    assert set(agent_spec["paths"]) == {
+        f"/runs/{{run_id}}/tools/{tool_name_of(c)}" for c in TOOL_CLASSES
+    }
+    assert all("/tools/" in p for p in agent_spec["paths"])
+
+
+def test_agent_spec_keeps_the_full_spec_intact(client):
+    # Filtering must not mutate the cached schema the service serves at
+    # /openapi.json -- app.openapi() memoizes, so a shallow filter would corrupt it.
+    client.get("/openapi-agent.json")
+    full = client.get("/openapi.json").json()
+    assert "/runs" in full["paths"]
+    assert "/healthz" in full["paths"]
+
+
+# ----------------------------------------------------------------------
 # Authorization
 # ----------------------------------------------------------------------
 
 
 def test_create_run_requires_api_key(client, classification_df):
+    # 401, not 422: a missing credential is an authentication failure, not a
+    # request-validation failure. Declaring the header as a security scheme
+    # rather than a plain Header(...) is what makes that distinction possible.
     response = client.post(
         "/runs", json={"csv_text": classification_df.to_csv(index=False), "target": "target"}
     )
-    assert response.status_code == 422  # missing required header
+    assert response.status_code == 401
 
 
 def test_create_run_rejects_wrong_api_key(client, classification_df):
@@ -94,10 +185,31 @@ def test_service_refuses_to_create_runs_when_no_key_is_configured(monkeypatch, c
     assert response.status_code == 503
 
 
-def test_tool_call_requires_the_run_token(client, classification_df):
+def test_tool_call_requires_a_credential(client, classification_df):
     run = _create_run(client, classification_df)
     response = client.post(f"/runs/{run['run_id']}/tools/eda_summary", json={})
-    assert response.status_code == 422  # missing required header
+    # 404 rather than 401: with no valid credential the caller must not be able
+    # to distinguish "run exists but you lack access" from "no such run".
+    assert response.status_code == 404
+
+
+def test_service_api_key_also_authorizes_a_tool_call(client, classification_df):
+    """The Foundry fallback path, and a deliberate weakening worth pinning down.
+
+    Foundry's OpenAPI tool supports only static auth, so it cannot present a
+    per-run token. Accepting the service API key is what keeps tool endpoints
+    reachable from an agent at all. The cost is that an API-key caller can
+    address any run in the process, which `test_run_token_cannot_address_a_
+    different_run` shows the token path still prevents.
+    """
+    run = _create_run(client, classification_df)
+    response = client.post(
+        f"/runs/{run['run_id']}/tools/eda_summary",
+        json={},
+        headers={"X-API-Key": API_KEY},
+    )
+    assert response.status_code == 200
+    assert response.json()["run_id"] == run["run_id"]
 
 
 def test_run_token_cannot_address_a_different_run(client, classification_df):
