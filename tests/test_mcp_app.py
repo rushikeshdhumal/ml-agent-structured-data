@@ -89,6 +89,64 @@ def test_schemas_are_flat_not_wrapped_in_one_object(client):
     assert {"run_id", "actions", "drop_duplicate_rows", "columns_to_drop"} <= set(cleaning)
 
 
+def test_nested_item_schemas_are_inlined_not_left_as_refs(client):
+    """A live Foundry agent invented the nested shape when it was behind a $ref.
+
+    It produced every top-level field of the feature plan correctly and every
+    nested field wrong -- `name` for `column`, `encoding: "numeric"`, plus
+    `transformer` and `handle_unknown`, which do not exist. The failure boundary
+    was exactly the reference, so the item shape has to be stated inline.
+    """
+    by_name = {t["name"]: t for t in _rpc(client, "tools/list")["result"]["tools"]}
+
+    for tool_name, array_field, expected_fields in (
+        ("apply_feature_plan", "column_plans", {"column", "encoding", "scaling"}),
+        ("apply_cleaning_plan", "actions", {"column", "missing_strategy", "outlier_strategy"}),
+    ):
+        schema = by_name[tool_name]["inputSchema"]
+        assert "$defs" not in schema, tool_name
+        assert "$ref" not in json.dumps(schema), tool_name
+
+        items = schema["properties"][array_field]["items"]
+        assert expected_fields <= set(items["properties"]), tool_name
+
+
+def test_inlined_enums_are_visible_on_nested_fields(client):
+    """The allowed values are the half the agent got wrong; they must be inline."""
+    by_name = {t["name"]: t for t in _rpc(client, "tools/list")["result"]["tools"]}
+    items = by_name["apply_feature_plan"]["inputSchema"]["properties"]["column_plans"]["items"]
+    assert set(items["properties"]["encoding"]["enum"]) == {
+        "onehot",
+        "ordinal",
+        "target_mean",
+        "frequency",
+        "none",
+    }
+    assert set(items["properties"]["scaling"]["enum"]) == {
+        "standard",
+        "minmax",
+        "robust",
+        "none",
+    }
+
+
+def test_inlining_does_not_weaken_validation(client, classification_run):
+    """Inlining rewrites what is advertised, never what is enforced."""
+    result = _rpc(
+        client,
+        "tools/call",
+        {
+            "name": "apply_feature_plan",
+            "arguments": {
+                "run_id": classification_run.run_id,
+                # The exact shape the live agent sent.
+                "column_plans": [{"name": "num_a", "encoding": "numeric"}],
+            },
+        },
+    )
+    assert "error" in json.dumps(result).lower()
+
+
 def test_tool_descriptions_come_from_the_tool_classes(client):
     by_name = {t["name"]: t for t in _rpc(client, "tools/list")["result"]["tools"]}
     expected = TOOL_CLASSES[0].model_fields["description"].default

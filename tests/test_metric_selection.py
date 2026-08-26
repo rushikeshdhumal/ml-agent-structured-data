@@ -47,6 +47,22 @@ def test_set_metric_tool_accepts_allowed_metric(classification_run, run_id):
     assert classification_run.history[-1]["stage"] == "model_selection"
 
 
+def test_set_metric_tool_normalizes_separator_variants(classification_run, run_id):
+    """Same normalization the plan enums use, for the same reason: "f1-macro"
+    is a spelling of an allowed metric, not a different request.
+    """
+    tool = SetMetricTool(run_id=run_id)
+    result = json.loads(tool._run(metric="f1-macro"))
+    assert result["status"] == "set"
+    assert classification_run.metric_name == "f1_macro"
+
+
+def test_set_metric_tool_still_rejects_a_genuinely_unknown_metric(classification_run, run_id):
+    tool = SetMetricTool(run_id=run_id)
+    assert "error" in json.loads(tool._run(metric="f_one"))
+    assert classification_run.metric_name is None
+
+
 def test_set_metric_tool_rejects_disallowed_metric_for_task_type(classification_run, run_id):
     tool = SetMetricTool(run_id=run_id)
     result = json.loads(tool._run(metric="rmse"))
