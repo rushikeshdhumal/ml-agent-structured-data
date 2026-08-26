@@ -21,7 +21,13 @@ from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier, XGBRegressor
 
 from ds_crew import settings
-from ds_crew.schemas import Leaderboard, MetricChoice, ModelCandidateResult, TaskType
+from ds_crew.schemas import (
+    Leaderboard,
+    MetricChoice,
+    ModelCandidateResult,
+    TaskType,
+    _canonical,
+)
 from ds_crew.state import get_data_store
 from ds_crew.tools.logging_tools import log_params, log_stage_metrics
 
@@ -223,6 +229,13 @@ class SetMetricTool(BaseTool):
             )
         state = get_data_store().get(choice.run_id)
         allowed = ALLOWED_METRICS[state.task_type]
+        # Same separator-insensitive match the plan enums use, so "f1-macro" and
+        # "roc auc" resolve rather than costing the agent a correction round
+        # trip. See `enum_alias` in schemas.py for why this is normalization
+        # rather than leniency.
+        choice.metric = {_canonical(m): m for m in allowed}.get(
+            _canonical(choice.metric), choice.metric
+        )
         if choice.metric not in allowed:
             return json.dumps(
                 {
