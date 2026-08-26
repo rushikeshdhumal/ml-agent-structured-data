@@ -93,12 +93,19 @@ class StageResult:
     # and counting one as the other is how a run reports success having done
     # nothing.
     refused_tools: list[str] = field(default_factory=list)
+    # Names of calls that actually succeeded, one entry per successful call.
+    # Kept separate from tool_calls/refused_tools rather than derived by
+    # set-subtracting them: a model that calls the same tool twice in one
+    # turn (a bad argument refused, then a self-corrected retry that
+    # succeeds) must have the later success count, and set(tool_calls) -
+    # set(refused_tools) collapses both calls to one name and erases it.
+    ok_tools: list[str] = field(default_factory=list)
     approvals: list[str] = field(default_factory=list)
     denied: list[str] = field(default_factory=list)
     transport_retries: int = 0
 
     def succeeded_tools(self) -> set[str]:
-        return set(self.tool_calls) - set(self.refused_tools)
+        return set(self.ok_tools)
 
 
 # Decides one approval. Returns (approve, reason).
@@ -249,6 +256,8 @@ class AgentRunner:
                 result.tool_calls.append(name)
                 if _is_refusal(item):
                     result.refused_tools.append(name)
+                else:
+                    result.ok_tools.append(name)
             elif kind == "message":
                 for content in getattr(item, "content", []) or []:
                     text = getattr(content, "text", None)

@@ -271,10 +271,14 @@ def _run_stage_until_it_acts(runner, stage, prompt, decide, previous, log):
         if not missing:
             return result
 
-        refused = sorted(set(result.refused_tools) & expected)
+        # Scoped to `missing`, not `expected`: a tool refused once but called
+        # again successfully in the same turn (self-correction) is already
+        # excluded from `missing` above and must not trip this hard stop.
+        refused = sorted(set(result.refused_tools) & missing)
         if refused:
-            # The tool ran and said no. Nudging cannot help: the refusal is a
-            # decision about run state, and repeating the call just repeats it.
+            # The tool ran and said no, with no later call to it succeeding.
+            # Nudging cannot help: the refusal is a decision about run state,
+            # and repeating the call just repeats it.
             raise StageDidNotAct(
                 f"Stage '{stage.key}': {', '.join(refused)} refused the call. "
                 f"The agent's account was:\n\n{result.text[:800]}"
@@ -333,6 +337,7 @@ def _merge(base, extra) -> None:
     base.output_tokens += extra.output_tokens
     base.tool_calls.extend(extra.tool_calls)
     base.refused_tools.extend(extra.refused_tools)
+    base.ok_tools.extend(extra.ok_tools)
     base.approvals.extend(extra.approvals)
     base.denied.extend(extra.denied)
     base.transport_retries += extra.transport_retries

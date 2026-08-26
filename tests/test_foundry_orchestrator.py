@@ -490,6 +490,75 @@ def test_a_successful_tool_call_is_not_mistaken_for_a_refusal():
     assert result.succeeded_tools() == {"eda_summary"}
 
 
+def test_a_same_turn_self_correction_is_credited_as_success():
+    """The bug this guards against: succeeded_tools() used to be
+    set(tool_calls) - set(refused_tools), a set difference by NAME. An agent
+    that called a tool once with a bad argument (refused in-band), then
+    self-corrected and called it again successfully in the same turn, saw
+    the later success erased by the earlier refusal -- both calls share one
+    name, so the set difference reports the tool as never having succeeded.
+    Observed live: tune_model_hyperparameters returned a genuine HpoResults
+    payload, yet the stage still raised "refused the call".
+    """
+    script = [
+        _response(
+            "r1",
+            [
+                SimpleNamespace(
+                    type="mcp_call",
+                    name="tune_model_hyperparameters",
+                    output='{"error": "[\'xgboost\'] not in top-3 leaderboard candidates"}',
+                ),
+                SimpleNamespace(
+                    type="mcp_call",
+                    name="tune_model_hyperparameters",
+                    output='{"run_id": "x", "results": [], "warnings": []}',
+                ),
+                _msg("Retried with a valid model and it worked."),
+            ],
+        )
+    ]
+    runner = AgentRunner(FakeProject({"a": script}), backoff_base_s=0, log=lambda _: None)
+    result = runner.run(agent="a", deployment="d", prompt="p", decide=_always_approve)
+    assert result.succeeded_tools() == {"tune_model_hyperparameters"}
+    # Still recorded for diagnostics -- the refusal happened, it just wasn't
+    # the last word on this tool.
+    assert result.refused_tools == ["tune_model_hyperparameters"]
+
+
+def test_a_same_turn_self_correction_lets_the_stage_proceed(monkeypatch):
+    """Same bug, exercised through run_pipeline rather than the runner
+    directly: the hpo stage must not raise StageDidNotAct when the agent's
+    only refusal on tune_model_hyperparameters was followed by a successful
+    call to the same tool in that turn.
+    """
+    monkeypatch.setattr(settings, "LLM_PRICE_PER_1M_INPUT", None)
+    monkeypatch.setattr(settings, "LLM_PRICE_PER_1M_OUTPUT", None)
+    scripts = _happy_scripts()
+    scripts["hpo-tuner"] = [
+        _response(
+            "h1",
+            [
+                SimpleNamespace(
+                    type="mcp_call",
+                    name="tune_model_hyperparameters",
+                    output='{"error": "bad model name"}',
+                ),
+                SimpleNamespace(
+                    type="mcp_call",
+                    name="tune_model_hyperparameters",
+                    output='{"run_id": "x", "results": [], "warnings": []}',
+                ),
+                _msg("done"),
+            ],
+        )
+    ]
+    project = FakeProject(scripts)
+    report = run_pipeline("r1", project_client=project, auto_approve=True, log=lambda _: None)
+    assert list(report.results) == [s.key for s in STAGES]
+    assert "tune_model_hyperparameters" in report.results["hpo"].succeeded_tools()
+
+
 def test_evaluation_stage_forbids_finalize_run():
     assert STAGES_BY_KEY["evaluation"].forbidden_tools == ("finalize_run",)
 
