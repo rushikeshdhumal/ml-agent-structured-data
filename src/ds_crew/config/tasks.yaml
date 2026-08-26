@@ -132,8 +132,10 @@ evaluation_task:
 
 explanation_task:
   description: >
-    Call explain_models exactly once for run {run_id} to explain the model(s) that were just
-    evaluated. Then, in plain language a non-specialist can act on, report: which original
+    Call explain_models exactly once for run {run_id}, passing model_names containing ONLY
+    the single model the evaluator recommended. Do not explain the other candidates: only
+    one model can be approved, and explaining the rest spends tokens on a decision nobody
+    is making. Then, in plain language a non-specialist can act on, report: which original
     dataset columns actually drive the model you recommend (use column_importance, not the
     encoded feature names); whether any top column could plausibly be a proxy for the target
     '{target}' and therefore a leakage risk worth investigating before approval; what the
@@ -144,8 +146,8 @@ explanation_task:
     nothing. This is the evidence a human will use to approve or reject the model, so be
     direct about weaknesses rather than presenting the model in its best light.
   expected_output: >
-    A complete ExplanationBundle for every model explained, plus a plain-language summary of
-    what drives the recommended model, any leakage concerns, and any reason for caution.
+    An ExplanationBundle for the single recommended model, plus a plain-language summary of
+    what drives it, any leakage concerns, and any reason for caution.
   agent: explainer
   context:
     - evaluation_task
