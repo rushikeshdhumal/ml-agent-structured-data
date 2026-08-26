@@ -7,6 +7,7 @@ task's `TaskOutput` -- `run_id` is its only way back into the DataStore.
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, Field
@@ -23,6 +24,41 @@ def _none_if_null_string(v: Any) -> Any:
     if isinstance(v, str) and v.strip().lower() in ("null", "none"):
         return None
     return v
+
+
+def _canonical(v: Any) -> str:
+    return re.sub(r"[\s_\-]+", "", str(v)).lower()
+
+
+def enum_alias(*allowed: str) -> BeforeValidator:
+    """Accept an enum value written with any separator style.
+
+    Observed live: a Foundry agent given the inlined schema for
+    `apply_feature_plan` got every field name right and then sent
+    `encoding: "one_hot"` against a `Literal["onehot", ...]`. The model was not
+    really wrong. `one_hot` is the near-universal spelling -- sklearn's
+    `OneHotEncoder`, "one-hot encoding" in every textbook -- and `onehot` is the
+    idiosyncratic one. A strong prior beats an unusual literal, and it will beat
+    it again on the next model and the next run.
+
+    Matching on the value with separators and case stripped accepts `one_hot`,
+    `one-hot` and `OneHot` for `onehot`, `min_max` for `minmax`, `drop-rows` for
+    `drop_rows`, and so on, without inventing new vocabulary. This cannot merge
+    two distinct options: it only unifies strings that are already identical
+    apart from separators, and `test_enum_aliases_cannot_collide` asserts no
+    pair in this module collides that way.
+
+    Deliberately not a synonym table. `forward_fill` for `ffill` would be a
+    guess about intent; this is only a spelling normalization.
+    """
+    lookup = {_canonical(a): a for a in allowed}
+
+    def normalize(v: Any) -> Any:
+        if isinstance(v, str):
+            return lookup.get(_canonical(v), v)
+        return v
+
+    return BeforeValidator(normalize)
 
 
 # ---------------------------------------------------------------------------
@@ -61,24 +97,31 @@ class EdaReport(BaseModel):
 # Cleaning
 # ---------------------------------------------------------------------------
 
-MissingStrategy = Literal[
-    "drop_rows", "mean", "median", "mode", "constant", "ffill", "bfill", "knn"
-]
-OutlierStrategy = Literal["none", "iqr_clip", "zscore_clip", "drop"]
+MISSING_STRATEGIES = ("drop_rows", "mean", "median", "mode", "constant", "ffill", "bfill", "knn")
+OUTLIER_STRATEGIES = ("none", "iqr_clip", "zscore_clip", "drop")
+DTYPE_CASTS = ("int", "float", "str", "category", "bool", "datetime")
+
+MissingStrategy = Literal[MISSING_STRATEGIES]  # type: ignore[valid-type]
+OutlierStrategy = Literal[OUTLIER_STRATEGIES]  # type: ignore[valid-type]
 
 
 class ColumnCleaningAction(BaseModel):
     column: str
     missing_strategy: Annotated[
-        MissingStrategy | None, BeforeValidator(_none_if_null_string)
+        MissingStrategy | None,
+        BeforeValidator(_none_if_null_string),
+        enum_alias(*MISSING_STRATEGIES),
     ] = None
     constant_fill_value: Annotated[
         str | float | None, BeforeValidator(_none_if_null_string)
     ] = None
-    outlier_strategy: OutlierStrategy = "none"
+    outlier_strategy: Annotated[
+        OutlierStrategy, enum_alias(*OUTLIER_STRATEGIES)
+    ] = "none"
     dtype_cast: Annotated[
-        Literal["int", "float", "str", "category", "bool", "datetime"] | None,
+        Literal[DTYPE_CASTS] | None,  # type: ignore[valid-type]
         BeforeValidator(_none_if_null_string),
+        enum_alias(*DTYPE_CASTS),
     ] = None
 
 
@@ -94,14 +137,18 @@ class CleaningPlan(BaseModel):
 # Feature engineering
 # ---------------------------------------------------------------------------
 
-EncodingStrategy = Literal["onehot", "ordinal", "target_mean", "frequency", "none"]
-ScalingStrategy = Literal["standard", "minmax", "robust", "none"]
+ENCODING_STRATEGIES = ("onehot", "ordinal", "target_mean", "frequency", "none")
+SCALING_STRATEGIES = ("standard", "minmax", "robust", "none")
+SELECTION_METHODS = ("none", "mutual_info", "variance_threshold")
+
+EncodingStrategy = Literal[ENCODING_STRATEGIES]  # type: ignore[valid-type]
+ScalingStrategy = Literal[SCALING_STRATEGIES]  # type: ignore[valid-type]
 
 
 class ColumnFeaturePlan(BaseModel):
     column: str
-    encoding: EncodingStrategy = "none"
-    scaling: ScalingStrategy = "none"
+    encoding: Annotated[EncodingStrategy, enum_alias(*ENCODING_STRATEGIES)] = "none"
+    scaling: Annotated[ScalingStrategy, enum_alias(*SCALING_STRATEGIES)] = "none"
     datetime_decompose: bool = False
 
 
@@ -109,7 +156,10 @@ class FeatureEngineeringPlan(BaseModel):
     run_id: str
     column_plans: list[ColumnFeaturePlan] = Field(default_factory=list)
     features_to_drop: list[str] = Field(default_factory=list)
-    feature_selection_method: Literal["none", "mutual_info", "variance_threshold"] = "none"
+    feature_selection_method: Annotated[
+        Literal[SELECTION_METHODS],  # type: ignore[valid-type]
+        enum_alias(*SELECTION_METHODS),
+    ] = "none"
     top_k: Annotated[int | None, BeforeValidator(_none_if_null_string)] = None
     rationale: str = ""
 
