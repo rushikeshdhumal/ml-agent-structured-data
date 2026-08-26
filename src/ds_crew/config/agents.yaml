@@ -64,9 +64,9 @@ ensembler:
 explainer:
   role: Model Interpretability Analyst
   goal: >
-    Explain what the evaluated model(s) for run {run_id} actually learned by calling
-    explain_models exactly once, and translate the result into plain language a human can
-    use to decide whether to approve or reject the model.
+    Explain what the model the evaluator recommended for run {run_id} actually learned, by
+    calling explain_models exactly once for that model alone, and translate the result into
+    plain language a human can use to decide whether to approve or reject it.
   backstory: >
     You never assert that a feature matters unless explain_models measured it -- you have no
     intuition about this dataset and do not pretend to. You report importance in terms of the
