@@ -99,20 +99,45 @@ checking, and economize where a guardrail and a human already are.
 |---|---|---|
 | **gpt-5** | `evaluator` | The only agent whose critical task has no safety net. Nothing else catches a miss. |
 | **gpt-5-mini** | `eda_analyst`, `cleaning_strategist`, `feature_engineer`, `model_selector`, `explainer` | Guardrailed and human-gated, or small enough that cost is irrelevant. |
-| **gpt-5-nano** | `hpo_tuner`, `ensembler` | Zero judgment by design: HPO requests a trial count the tool caps anyway, and the ensembler is explicitly forbidden from picking members, weights, or strategy. |
+| ~~**gpt-5-nano**~~ **gpt-5-mini** | `hpo_tuner`, `ensembler` | Analysis says nano: zero judgment by design, since HPO requests a trial count the tool caps anyway and the ensembler is explicitly forbidden from picking members, weights, or strategy. **Overridden by a platform constraint** (below). |
 
 `eda_analyst` is unguarded but gets mini rather than nano deliberately: its
 profile seeds every downstream decision and no guardrail catches a fabricated
 statistic. At $0.0038/run the cost difference is not worth the risk.
+
+### Platform constraint: nano cannot call tools on Foundry (2026-08-26)
+
+Discovered while building the agents: the `gpt-5-nano` deployment offers **no
+custom tools at all**, MCP included. A Foundry agent on nano cannot reach the
+tool layer, and both of nano's assigned agents exist solely to call one tool
+each. So the tier is unusable here regardless of the reasoning that selected it.
+
+`hpo_tuner` and `ensembler` therefore run on **gpt-5-mini**. The cost of being
+overruled is **$0.0076/run**, 2.9% of the recommended mix, or **$3.27 across the
+whole $99**. Runs per $99 fall from 383 to 372.
+
+Chasing it further is not worth it: `gpt-5.4-nano` would recover only $1.92 of
+that $3.27 over the same budget, and would need its own deployment and its own
+capability check.
+
+The analysis stands as written. Where task judgment is genuinely absent, the
+cheapest tier is correct reasoning; what changed is that the platform will not
+sell it here. Recorded rather than quietly edited, because the same reasoning
+applies again on any platform whose cheapest tier does support tool calling.
 
 ### Economics
 
 | Config | $/run | Runs per $99 | vs all-gpt-5 |
 |---|---|---|---|
 | All gpt-5 | $0.9371 | 105 | -- |
-| **Recommended** | **$0.2583** | **383** | -72% |
-| Recommended, `explainer` on gpt-5 | $0.5534 | 178 | -41% |
+| Recommended, as analysed | $0.2583 | 383 | -72% |
+| **Recommended, as deployable** | **$0.2659** | **372** | -72% |
+| Recommended, `explainer` on gpt-5 | $0.5610 | 176 | -40% |
 | All gpt-5-mini | $0.1687 | 586 | -82% |
+
+"As deployable" is the row that matters: it is the analysed mix with
+`hpo_tuner` and `ensembler` moved off nano, which Foundry will not let call
+tools. The two rows differ by $3.27 over the full budget.
 
 ## The one open decision
 
