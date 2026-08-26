@@ -351,6 +351,7 @@ src/ds_crew/
   schemas.py        Pydantic models for every plan/report passed between tasks
   guardrails.py     Function-based CrewAI Task guardrails
   settings.py       Env-driven constants (model, budgets, MLflow config, AUTO_APPROVE)
+  usage_listener.py Per-task/per-agent token + retry accounting off CrewAI's event bus
   config/
     agents.yaml     Agent role/goal/backstory
     tasks.yaml      Task descriptions, context wiring
@@ -368,6 +369,8 @@ src/ds_crew/
     app.py            FastAPI app; routes generated from the tool registry
     registry.py       Which tools are published, read off the tool classes
     __main__.py       `ds-crew-service` entrypoint
+docs/
+  model-selection.md  Measured per-agent cost + which model each agent should run
 tests/              Unit tests for every tool/guardrail/schema (no LLM calls)
 tests/e2e/          Full pipeline test; requires a live LLM key, opt-in via `-m e2e`
 ```
@@ -479,6 +482,38 @@ run tokens live alongside them, so the service runs **one worker** and does not
 scale horizontally. Scaling out means externalizing that state, and the
 `X_test`-scored-exactly-once invariant along with it, which is the part that needs
 real care rather than a storage swap.
+
+## Cost and model selection
+
+An agentic system's running cost is LLM spend, so this repo measures it rather
+than estimating it. Every run records token counts, request count and wall-clock
+to MLflow, plus an optional `estimated_cost_usd` when `LLM_PRICE_PER_1M_INPUT` /
+`_OUTPUT` are set. `usage_listener.py` additionally attributes **every LLM call
+to the task and agent that made it**, which is what makes per-agent model choice
+a measurement instead of an opinion.
+
+One measured run on a 500-row/5-column dataset, priced against Azure `gpt-5`
+rates in `eastus2`:
+
+| | |
+|---|---|
+| Tokens | 65,664 prompt + 38,645 completion, 29 requests, 8.5 min |
+| All agents on gpt-5 | $0.9371/run |
+| **Tiered assignment** | **$0.2583/run** (-72%) |
+
+Two results drive that tiering, and both cut against intuition:
+
+- **The `explainer` alone is 38% of the all-gpt-5 bill**, because output tokens
+  cost 8x input and it emits the most prose. It also has the *strongest* safety
+  net: a grounding guardrail plus a human gate.
+- **`evaluation_task` has no guardrail and no human gate**, yet the evaluator is
+  the agent responsible for flagging leakage. It is the thinnest safety net in
+  the pipeline, so it gets the strongest model regardless of its modest cost
+  share.
+
+Spend follows exposure rather than job title. Full per-agent numbers, the
+safety-net map, the recommended assignment and its caveats are in
+[docs/model-selection.md](docs/model-selection.md).
 
 ## Limitations
 
