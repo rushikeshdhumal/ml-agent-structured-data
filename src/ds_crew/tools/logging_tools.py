@@ -1,29 +1,33 @@
 """MLflow metadata logging.
 
 Mostly plain functions (not agent-facing tools) called directly from inside
-each mutating tool's `_run()` and from `main.py`'s run lifecycle -- logging
-has no reasoning content, so it is deterministic code wired to always fire
-(including on failure), never an agent's responsibility to remember.
+each mutating tool's `_run()` -- logging has no reasoning content, so it is
+deterministic code wired to always fire (including on failure), never an
+agent's responsibility to remember.
 
 Every helper takes the target run's `run_id` explicitly (threaded through
-from `RunState.mlflow_run_id`, set once in `main.py`) and logs via
-`MlflowClient` rather than the ambient `mlflow.log_*`/`mlflow.active_run()`
-fluent API. That matters: CrewAI executes tool `_run()` calls from a worker
-thread, not the thread that opened the run in `main.py`, and
-`mlflow.active_run()` is thread-local -- it returns None from inside a tool
-even while the run is genuinely active, silently swallowing every log call.
-`MlflowClient` methods take run_id directly and don't depend on which
-thread they're called from. When `run_id` is None (e.g. a tool's `_run()`
-called directly in a unit test, with no MLflow run wired up), every helper
-is a no-op.
+from `RunState.mlflow_run_id`) and logs via `MlflowClient` rather than the
+ambient `mlflow.log_*`/`mlflow.active_run()` fluent API. That distinction
+outlives any one caller: `mlflow.active_run()` is thread-local, so a caller
+that executes tool `_run()`s from a worker thread other than the one that
+opened the run gets None back from inside a tool even while the run is
+genuinely active, silently swallowing every log call. `MlflowClient` methods
+take run_id directly and don't depend on which thread they're called from.
+
+Nothing on this branch currently sets `RunState.mlflow_run_id` -- its only
+writer was `main.py`'s `mlflow.start_run()`, removed with the rest of the
+CrewAI pipeline -- so `run_id` is always None here today and every helper
+below no-ops on its guard. Wiring this back in for the Foundry path means
+deciding where a run's MLflow lifetime begins and ends now that a run spans
+many independent HTTP requests rather than one process's
+`with mlflow.start_run():` block.
 
 `FinalizeRunTool` is the one agent-facing exception in this module:
 finalization needs an agent to communicate a human's approve/reject
 decision through a tool call so it can be validated and recorded like any
-other action. Its outcome is tagged `model_status` (approved/rejected) --
-deliberately not `status`, which `main.py` already uses for the crew run's
-own completed/failed outcome; sharing one key would let whichever write
-happens last silently clobber the other.
+other action. Its outcome is tagged `model_status` (approved/rejected), kept
+distinct from any run-level `status` a future caller might set, so one write
+cannot silently clobber the other.
 """
 
 from __future__ import annotations
@@ -37,7 +41,7 @@ from typing import Any
 import mlflow.catboost
 import mlflow.lightgbm
 import mlflow.sklearn
-from crewai.tools import BaseTool
+from ds_crew.tools.base import Tool
 from mlflow.tracking import MlflowClient
 from pydantic import BaseModel
 
@@ -176,8 +180,9 @@ def log_model_artifact(run_id: str | None, model: Any, artifact_path: str = "mod
     "active" in the CURRENT thread. Re-entering the run via
     `with mlflow.start_run(run_id=run_id):` would work for logging, but
     exiting that block terminates the run (sets it FINISHED) immediately --
-    even though the crew's own outer run context in main.py is still open.
-    Going through MlflowClient sidesteps run-lifecycle state entirely.
+    a problem for any caller whose own outer run context is still open when
+    this fires. Going through MlflowClient sidesteps run-lifecycle state
+    entirely.
     """
     if not run_id:
         return
@@ -191,7 +196,7 @@ def log_model_artifact(run_id: str | None, model: Any, artifact_path: str = "mod
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-class FinalizeRunTool(BaseTool):
+class FinalizeRunTool(Tool):
     name: str = "finalize_run"
     description: str = (
         "Records the human's final sign-off decision for the run. If approved, logs the "

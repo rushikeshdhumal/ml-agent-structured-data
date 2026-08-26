@@ -1,8 +1,8 @@
 """Entrypoint for the HTTP tool service: `ds-crew-service`.
 
-Kept separate from `main.py` because the two are different programs. `ds-crew`
-runs one pipeline to completion and exits; this serves the tool layer to whatever
-drives it. They share the tools and nothing else.
+This is the tool layer's only caller on this branch: it serves the tools in
+`ds_crew.tools` to whatever drives them -- `ds_crew.foundry` over HTTP/MCP,
+or a Foundry agent directly.
 """
 
 from __future__ import annotations

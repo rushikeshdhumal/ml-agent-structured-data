@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 
 import pandas as pd
-from crewai.tools import BaseTool
+from ds_crew.tools.base import Tool
 from pydantic import BaseModel
 from sklearn.impute import KNNImputer
 from sklearn.model_selection import train_test_split
@@ -185,7 +185,7 @@ def fit_transform_cleaning(
     return df_train, df_test
 
 
-class ApplyCleaningPlanTool(BaseTool):
+class ApplyCleaningPlanTool(Tool):
     name: str = "apply_cleaning_plan"
     description: str = (
         "MUTATES the run's dataset by applying a human-approved CleaningPlan. Validates "

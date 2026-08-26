@@ -16,7 +16,7 @@ import json
 
 import numpy as np
 import pandas as pd
-from crewai.tools import BaseTool
+from ds_crew.tools.base import Tool
 from pydantic import BaseModel
 from sklearn.metrics import (
     accuracy_score,
@@ -152,7 +152,7 @@ class EvaluateModelsInput(BaseModel):
     model_names: list[str]
 
 
-class EvaluateModelsTool(BaseTool):
+class EvaluateModelsTool(Tool):
     name: str = "evaluate_models"
     description: str = (
         "Fits each named model (using tuned hyperparameters from HPO if available, else "

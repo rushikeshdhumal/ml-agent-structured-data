@@ -25,7 +25,7 @@ from typing import Any
 
 import numpy as np
 import optuna
-from crewai.tools import BaseTool
+from ds_crew.tools.base import Tool
 from pydantic import BaseModel, Field
 from sklearn.ensemble import (
     StackingClassifier,
@@ -262,7 +262,7 @@ class BuildEnsembleInput(BaseModel):
     )
 
 
-class EnsembleModelsTool(BaseTool):
+class EnsembleModelsTool(Tool):
     name: str = "build_ensemble"
     description: str = (
         "Combines the strongest model-selection/HPO candidates into a single ensemble "

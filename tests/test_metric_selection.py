@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import pytest
 from _helpers import prepare_features
 
-from ds_crew.guardrails import validate_metric_choice_guardrail
-from ds_crew.schemas import MetricChoice
 from ds_crew.tools.hpo_tools import run_optuna_study
 from ds_crew.tools.model_tools import (
     ALLOWED_METRICS,
@@ -15,10 +12,6 @@ from ds_crew.tools.model_tools import (
     TrainCandidateModelsTool,
     resolve_cv_scorer,
 )
-
-
-def _task_output(pydantic_obj):
-    return SimpleNamespace(pydantic=pydantic_obj)
 
 
 def _prepare_run(run_id, df, target):
@@ -74,31 +67,6 @@ def test_set_metric_tool_rejects_non_r2_for_regression(regression_run, run_id):
     tool = SetMetricTool(run_id=run_id)
     result = json.loads(tool._run(metric="accuracy"))
     assert "error" in result
-
-
-def test_validate_metric_choice_guardrail_passes_allowed_metric(classification_run, run_id):
-    choice = MetricChoice(run_id=run_id, metric="roc_auc", rationale="binary target")
-    ok, result = validate_metric_choice_guardrail(_task_output(choice))
-    assert ok is True
-    assert result is choice
-
-
-def test_validate_metric_choice_guardrail_rejects_disallowed_metric(classification_run, run_id):
-    choice = MetricChoice(run_id=run_id, metric="rmse")
-    ok, error = validate_metric_choice_guardrail(_task_output(choice))
-    assert ok is False
-    assert "rmse" in error
-
-
-def test_validate_metric_choice_guardrail_rejects_wrong_type():
-    ok, error = validate_metric_choice_guardrail(_task_output("not a MetricChoice"))
-    assert ok is False
-
-
-def test_validate_metric_choice_guardrail_rejects_unknown_run():
-    choice = MetricChoice(run_id="ghost-run", metric="f1_macro")
-    ok, error = validate_metric_choice_guardrail(_task_output(choice))
-    assert ok is False
 
 
 def test_leaderboard_metric_name_follows_chosen_metric(classification_run, run_id, classification_df):

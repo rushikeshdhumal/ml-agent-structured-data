@@ -240,27 +240,6 @@ def test_shap_path_produces_local_explanations_and_shap_values(
     assert kinds <= {"confident_correct", "confident_wrong", "most_uncertain"}
 
 
-def test_shap_survives_crewais_warnings_monkeypatch():
-    # crewai/__init__.py replaces warnings.warn with a wrapper that takes no
-    # **kwargs, so shap's warnings.warn(..., skip_file_prefixes=...) raises
-    # TypeError. Because crewai is always imported in the real pipeline, this
-    # silently degraded EVERY run to permutation-only while isolated testing
-    # of shap looked fine -- assert the scoped restore actually works.
-    import warnings as warnings_module
-
-    import crewai  # noqa: F401 -- imported for its import-time monkeypatch
-
-    with pytest.raises(TypeError):
-        warnings_module.warn("x", UserWarning, skip_file_prefixes=("a",))
-
-    with explain_tools_module._unpatched_warnings():
-        warnings_module.warn("x", UserWarning, skip_file_prefixes=("a",))
-
-    # ...and crewai's patch is put back afterwards.
-    with pytest.raises(TypeError):
-        warnings_module.warn("x", UserWarning, skip_file_prefixes=("a",))
-
-
 def test_surrogate_is_fit_against_model_predictions(
     classification_run, run_id, classification_df
 ):

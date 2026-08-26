@@ -27,14 +27,12 @@ jobs:
       fail-fast: false
       matrix:
         # The bookends of `requires-python = ">=3.12,<3.14"` in pyproject.toml.
-        # This matrix is not cosmetic: dependency resolution genuinely differs
-        # per Python version here, and an earlier 3.10 job in this same matrix
-        # is what surfaced why the floor is 3.12 rather than 3.10 -- crewai ->
-        # chromadb -> onnxruntime has no cp310 wheel above 1.23.x, and more
-        # importantly each Python resolves a different shap (3.10 -> 0.49.1,
-        # 3.11 -> 0.51.0, 3.12+ -> 0.52.0), while explain_tools.py's SHAP
-        # output-shape handling is only verified against 0.52.0. Keep both jobs:
-        # 3.12 is the floor being claimed and nobody develops on it.
+        # This matrix is not cosmetic: each Python resolves a different shap
+        # (3.10 -> 0.49.1, 3.11 -> 0.51.0, 3.12+ -> 0.52.0), while
+        # explain_tools.py's SHAP output-shape handling is only verified
+        # against 0.52.0, which is why the floor is 3.12 rather than lower.
+        # Keep both jobs: 3.12 is the floor being claimed and nobody develops
+        # on it.
         python-version: ["3.12", "3.13"]
 
     name: test (py${{ matrix.python-version }})
@@ -56,8 +54,4 @@ jobs:
         run: uv run ruff check .
 
       - name: Test
-        # Bare `pytest` is deliberate. pyproject.toml's addopts already carries
-        # `-m 'not e2e'`, which excludes tests/e2e/ -- that suite calls a live
-        # LLM and needs a real API key, so it cannot run here and is executed
-        # manually instead. Do not add `-m e2e` to this workflow.
         run: uv run pytest

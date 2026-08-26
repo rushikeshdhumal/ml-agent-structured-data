@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 import pandas as pd
-from crewai.tools import BaseTool
+from ds_crew.tools.base import Tool
 from pydantic import BaseModel
 
 from ds_crew import settings
@@ -161,7 +161,7 @@ class EdaSummaryInput(BaseModel):
     include_correlations: bool = True
 
 
-class EdaSummaryTool(BaseTool):
+class EdaSummaryTool(Tool):
     name: str = "eda_summary"
     description: str = (
         "Read-only. Profiles the current dataset for this run: schema, missingness, "

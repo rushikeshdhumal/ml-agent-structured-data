@@ -3,7 +3,7 @@
 [![CI](https://github.com/rushikeshdhumal/ml-agent-structured-data/actions/workflows/ci.yml/badge.svg)](https://github.com/rushikeshdhumal/ml-agent-structured-data/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
-[![Built with CrewAI](https://img.shields.io/badge/built%20with-CrewAI-6f42c1.svg)](https://docs.crewai.com)
+[![Azure AI Foundry](https://img.shields.io/badge/hosted%20on-Azure%20AI%20Foundry-0078d4.svg)](https://ai.azure.com)
 
 **Letting an autonomous agent near real data is a governance problem before it
 is a modeling problem.** The hard question is not whether an LLM can pick a good
@@ -11,147 +11,76 @@ model -- it usually can. It is whether you can prove what it did, stop it before
 it does something irreversible, and explain the result to whoever is accountable
 for the decision.
 
-DS-Crew is one answer. It is a [CrewAI](https://docs.crewai.com) multi-agent
-system that runs the full data-science lifecycle for structured (tabular) data
--- EDA, cleaning, feature engineering, model selection, hyperparameter
-optimization, ensembling, evaluation, and explainability -- where **agents never
-touch the data**. Every mutation goes through a deterministic, Pydantic-validated
-Python tool; every irreversible decision is gated on a human; every step lands in
-an audit trail.
+DS-Crew is one answer. Eight agents, hosted as [Azure AI
+Foundry](https://ai.azure.com) agents, run the full data-science lifecycle for
+structured (tabular) data -- EDA, cleaning, feature engineering, model
+selection, hyperparameter optimization, ensembling, evaluation, and
+explainability -- where **agents never touch the data**. Every mutation goes
+through a deterministic, Pydantic-validated Python tool; every irreversible
+decision is gated on a human; every step is driven by an explicit,
+code-defined pipeline order rather than an LLM-routed handoff.
 
 Raw data acquisition is explicitly out of scope: you hand it a CSV and a
 target column, and it takes it from there.
 
+> This branch hosts the agents entirely in Azure AI Foundry, with an external
+> Python orchestrator (`ds_crew.foundry`) driving them deterministically. An
+> earlier, self-contained CrewAI implementation (agents and orchestration both
+> running in-process, no Azure account required) lives on `main`; see
+> ["Why orchestration lives here and not in Foundry"](#why-orchestration-lives-here-and-not-in-foundry)
+> for why the two don't share one dependency tree.
+
 ## Quick start
 
-Requires [uv](https://docs.astral.sh/uv/).
+Requires [uv](https://docs.astral.sh/uv/), an Azure subscription with an AI
+Foundry project, and the [Azure CLI](https://learn.microsoft.com/cli/azure/)
+for `az login`.
 
 ```bash
 git clone https://github.com/rushikeshdhumal/ml-agent-structured-data.git
 cd ml-agent-structured-data
-uv sync --extra dev
-cp .env.example .env   # set MODEL + the matching API key (see comments in the file)
+uv sync --extra dev --extra service --extra foundry
+cp .env.example .env   # set AZURE_FOUNDRY_PROJECT_ENDPOINT, SERVICE_API_KEY, SERVICE_PUBLIC_URL
+az login               # Entra auth; the Agents API takes no API key
 ```
 
-Run the crew against a dataset:
+Create the eight agents in the Foundry portal once (see "Running on Azure AI
+Foundry" below), then start the tool layer and drive a run:
 
 ```bash
-uv run ds-crew --data path/to/data.csv --target target_column
+uv run ds-crew-service --port 8000          # terminal 1: the tool layer
+uv run ds-crew-foundry \
+  --csv path/to/data.csv --target target_column
 ```
 
-Each invocation is one dataset, one CrewAI run, one MLflow run. By default
-you'll be prompted at the console to review/edit the cleaning plan, the
-feature-engineering plan, the optimization metric, and the explained final
-model before anything irreversible happens; set `AUTO_APPROVE=1` in `.env` to
-skip these gates for automated/headless runs (every auto-approved run is tagged
-`auto_approve=true` in MLflow so it's never mistaken for a real sign-off).
-
-Inspect results:
-
-```bash
-uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
-```
+By default the run pauses at the tool-service's four gated tools (cleaning,
+feature engineering, the optimization metric, and the final sign-off) plus a
+live prompt to review the explanation before deciding on the model; pass
+`--auto-approve` for an unattended run (recorded as a rejection unless you
+also pass `--verdict`).
 
 Run the tests:
 
 ```bash
-uv run pytest                    # unit tests only (default; no LLM calls)
-uv run pytest -m e2e tests/e2e   # full pipeline, requires a live LLM key
+uv run pytest
 ```
 
-## Walkthrough: a full interactive run
+## Preparing a dataset
 
-The headless path above is the CI story. The interactive path is the one worth
-watching, because the four human gates are the point of the design.
+Any CSV with a target column works, but to exercise every stage pick one with
+missing values (cleaning does real work), mixed numeric/categorical columns
+(feature engineering does real work), and mild class imbalance (the metric
+gate faces a genuine decision). Columns a reader already understands help
+most of all -- they make the explainability output checkable against
+intuition rather than taken on trust.
 
-### 1. Prepare the dataset
+Drop free-text and ID-like columns first (`Name`, `Ticket`, `PassengerId`,
+...). The feature-plan schema requires *every* non-target column to be
+explicitly encoded or dropped, so leaving high-cardinality text in mostly
+buys retries.
 
-Any CSV with a target column. To exercise every stage, pick one with missing
-values (cleaning does real work), mixed numeric/categorical columns (feature
-engineering does real work), and mild class imbalance (the metric gate faces a
-genuine decision). Columns a reader already understands help most of all --
-they make the explainability output checkable against intuition rather than
-taken on trust.
-
-Drop free-text and ID-like columns first (`Name`, `Ticket`, `PassengerId`, ...).
-The feature-plan schema requires *every* non-target column to be explicitly
-encoded or dropped, so leaving high-cardinality text in mostly buys retries.
-
-### 2. Configure `.env`
-
-```bash
-MODEL=z-ai/glm-5.2
-LLM_BASE_URL=https://integrate.api.nvidia.com/v1
-LLM_API_KEY=nvapi-...
-MAX_RPM=35
-AUTO_APPROVE=0        # 0 = the four human gates fire
-```
-
-### 3. Run
-
-Must be a real interactive terminal -- the gates read stdin, so this cannot be
-backgrounded or redirected to a file.
-
-```bash
-uv run ds-crew --data path/to/data.csv --target target_column --run-name my-demo
-```
-
-Optional: `--task classification|regression|auto` (default `auto`),
-`--test-size 0.2`, `--metric roc_auc` (seeds the gate; a human can still
-override it live).
-
-### 4. The four gates
-
-The run pauses at each. Press Enter to accept, or type feedback to send the
-agent back:
-
-| # | Gate | What you're reviewing |
-|---|---|---|
-| 1 | `propose_cleaning_task` | per-column imputation / outlier strategy |
-| 2 | `propose_feature_task` | encoding + scaling per column |
-| 3 | `propose_metric_task` | the metric all later stages optimize, with the agent's reasoning from EDA |
-| 4 | `explanation_task` | held-out metrics **and** what the model learned -- then approve or reject |
-
-Gate 3 is a good place to override live and watch the choice propagate through
-CV, HPO, ensembling, and evaluation.
-
-Gate 4 is the one to land on: **type an actual approval there.** Every
-`AUTO_APPROVE=1` run ends `rejected` by design (the safety default when no
-human is present), so a real approval is the only way to exercise the approved
-branch -- `model_status=approved` plus a serialized `model/` artifact.
-
-Budget roughly 20-25 minutes of pipeline time on top of your own review time.
-(A measured headless run on a 500-row dataset took 22.1 minutes end to end with
-`AUTO_APPROVE=1`, so that figure includes no human thinking time at all. Most of
-it is LLM latency across 13 tasks, not local compute.)
-
-### 5. Inspect
-
-```bash
-uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
-```
-
-Walk the artifact tree at <http://localhost:5000>: `cleaning/`,
-`feature_engineering/`, `hpo/`, `ensemble/`, `evaluation/`, `explanation/`,
-`model/`. Every approved plan and the raw human feedback text is stored, so the
-full decision trail is reconstructable after the fact.
-
-The single most informative file is `explanation/<model>_report.json`:
-`column_importance` in original column names, the model's `confident_wrong`
-rows with signed per-feature contributions, and `surrogate_fidelity`.
-
-### Two things to expect
-
-- **Rate limits are account-wide, not per-run.** `MAX_RPM` paces calls within a
-  single run and has no visibility into your previous one, so back-to-back runs
-  on a free tier will 429 even with it set. Space runs 60-90s apart. NVIDIA's
-  `z-ai/glm-5.2` has a history of persistent 429s; `meta/llama-3.3-70b-instruct`
-  is the more reliable fallback, at the cost of weaker structured output.
-- **Guardrail retries are normal.** Some models wrap structured output in prose,
-  which the `propose`-stage guardrails reject; you'll see `Guardrail Failed`
-  boxes that self-heal on the next attempt. A verified run hit four of these and
-  still completed cleanly. This is the retry loop working, not the pipeline
-  breaking.
+See ["Running on Azure AI Foundry"](#running-on-azure-ai-foundry) below for
+the actual run walkthrough -- gate-by-gate and what to expect.
 
 ## Architecture
 
@@ -165,16 +94,16 @@ flowchart TD
     EDA["**eda_analyst**<br/>eda_task"]
     PC["**cleaning_strategist**<br/>propose_cleaning_task 👤"]
     EC["**cleaning_strategist**<br/>execute_cleaning_task<br/><sub>train/test split; stats fit on train only</sub>"]
-    PF["**feature_engineer**<br/>propose_feature_task 👤 🛡️"]
+    PF["**feature_engineer**<br/>propose_feature_task 👤"]
     EF["**feature_engineer**<br/>execute_feature_task"]
-    PM["**model_selector**<br/>propose_metric_task 👤 🛡️"]
+    PM["**model_selector**<br/>propose_metric_task 👤"]
     SM["**model_selector**<br/>set_metric_task"]
     MS["**model_selector**<br/>model_selection_task<br/><sub>CV leaderboard</sub>"]
     HPO["**hpo_tuner**<br/>hpo_task<br/><sub>Optuna, budget-capped</sub>"]
     ENS["**ensembler**<br/>ensembling_task<br/><sub>voting/stacking/greedy, metric-optimized</sub>"]
     EV["**evaluator**<br/>evaluation_task<br/><sub>X_test scored once</sub>"]
-    EX["**explainer**<br/>explanation_task 👤 🛡️<br/><sub>SHAP + permutation, read-only</sub>"]
-    FIN["**evaluator**<br/>finalize_task<br/><sub>sign-off</sub>"]
+    EX["**explainer**<br/>explanation_task<br/><sub>SHAP + permutation, read-only</sub>"]
+    FIN["**evaluator**<br/>finalize_task 👤<br/><sub>sign-off</sub>"]
 
     CSV --> EDA --> PC --> EC --> PF --> EF --> PM --> SM --> MS --> HPO --> ENS --> EV --> EX --> FIN
 
@@ -200,46 +129,42 @@ flowchart TD
     FIN -.-> T6
 
     DS[("DataStore<br/><sub>per-run DataFrames --<br/>never enters LLM context</sub>")]
-    MLF[("MLflow<br/><sub>sqlite:///mlflow.db</sub>")]
 
     T1 & T2 & T3 & T4 & T7 & T5 & T8 --> DS
-    T1 & T2 & T3 & T4 & T7 & T5 & T8 & T6 --> MLF
 
     classDef gate fill:#fff3cd,stroke:#b38600
-    class PC,PF,PM,EX gate
+    class PC,PF,PM,FIN gate
 ```
 
-👤 = human-in-the-loop gate &nbsp;&nbsp; 🛡️ = task guardrail
+👤 = human-in-the-loop gate (paused by the Foundry orchestrator on the tool
+service's four gated tools)
 
 **Agents never manipulate data directly.** Every mutating action --
 profiling, cleaning, encoding, training, tuning, evaluating -- goes through a
 Pydantic-validated tool. This is enforced in layers:
 
-1. Pydantic `args_schema` / `output_pydantic` on every tool and "propose"
-   task rejects structurally invalid output before it reaches any logic.
+1. Pydantic `args_schema` on every tool rejects structurally invalid
+   arguments before they reach any logic.
 2. Every mutating tool re-validates its input against the *actual current
    dataset* at call time (unknown columns, target-as-feature, disallowed
-   strategies all come back as a structured error, never a silent no-op).
-3. Task-level `guardrail` functions (`guardrails.py`) catch business-rule
-   violations (e.g. target leakage) and trigger CrewAI's automatic
-   agent-retry loop.
-4. The corresponding mutating tool independently re-checks the same rule --
-   a guardrail only covers one task's output, so the tool call is a separate
-   trust boundary that must not blindly trust upstream validation.
-5. Hyperparameter search budgets (`n_trials`, `timeout_s`) are hard-capped in
+   strategies all come back as a structured error, never a silent no-op) --
+   this is the real trust boundary, not any upstream check.
+3. Hyperparameter search budgets (`n_trials`, `timeout_s`) are hard-capped in
    code (`settings.MAX_HPO_TRIALS` / `MAX_HPO_TIMEOUT_S`), regardless of what
    an agent requests.
 
-**Human-in-the-loop.** Applying a cleaning plan (which also performs the
-train/test split), applying a feature-engineering plan, choosing the
-optimization metric, and accepting a final model are gated by CrewAI's native
-`human_input` Task flag: an agent first *proposes* a structured plan, a human
-reviews/edits it at the console, and only then does a separate *execute* task
-call the mutating tool with the approved plan. The final sign-off gate sits on
-`explanation_task`, not `evaluation_task`, so the human decides with the
-held-out metrics *and* the evidence of what the model learned in front of
-them, rather than approving on a score and being shown the explanation
-afterwards.
+**Human-in-the-loop.** `apply_cleaning_plan` (which also performs the
+train/test split), `apply_feature_plan`, `set_evaluation_metric`, and
+`finalize_run` are MCP tools with `require_approval: always`: an agent
+proposes a call, Foundry pauses it, and `ds_crew.foundry`'s orchestrator
+shows a human the exact arguments before deciding. A denial with a reason
+sends the agent back to revise that specific proposal, not to abandon the
+run -- see ["Running on Azure AI Foundry"](#running-on-azure-ai-foundry) for
+what that loop actually looks like live. The final sign-off gate is a
+separate turn from `evaluation_task`, deliberately: `finalize_task` only runs
+after `explanation_task`, so the human decides with the held-out metrics
+*and* the evidence of what the model learned in front of them, rather than
+approving on a score and being shown the explanation afterwards.
 
 **No test-set leakage.** The train/test split happens in cleaning, not
 feature engineering, specifically so that every cleaning statistic --
@@ -256,10 +181,13 @@ locked in), and only to inform the terminal human decision -- nothing it
 surfaces can flow back into choosing a model.
 
 **Metadata logging** (`tools/logging_tools.py`) is deterministic code, not
-an agent -- it's wired to fire automatically from inside each tool and from
-`main.py`'s run lifecycle, rather than depending on an agent remembering to
-log something. Everything lands in MLflow against a local SQLite-backed
-tracking store, no server required.
+an agent -- called directly from inside each mutating tool rather than
+depending on an agent remembering to log something. It logs against a local
+SQLite-backed MLflow store, no server required, but currently has no writer
+for a run's MLflow lifetime (`mlflow.start_run()`/`RunState.mlflow_run_id`):
+see the ["Limitations"](#limitations) note on this. Cost visibility for a
+Foundry run comes instead from `ds_crew.foundry.orchestrator.RunReport`,
+printed at the end of every run.
 
 ### Model registry
 
@@ -331,31 +259,28 @@ signed per-row attributions for the model's most confident correct answers,
 most confident *mistakes*, and most uncertain cases, a shallow surrogate
 decision tree with a fidelity score saying whether those simple rules can be
 trusted as a description of the model, and the list of engineered features
-that contributed nothing. Reports land in MLflow under `explanation/`.
+that contributed nothing.
 
-Two implementation notes worth knowing before touching this stage: SHAP is
+One implementation note worth knowing before touching this stage: SHAP is
 skipped outright for **multiclass CatBoost** (shap 0.52.0's `TreeExplainer`
-segfaults there -- a process kill no `try/except` can recover from, so it must
-be a pre-emptive guard), and every SHAP import/call runs inside
-`_unpatched_warnings()` because CrewAI monkey-patches `warnings.warn` with a
-wrapper that rejects Python 3.12's `skip_file_prefixes`, which matplotlib
-passes during shap's import chain.
+segfaults there -- a process kill no `try/except` can recover from, so it
+must be a pre-emptive guard).
+
+Nothing currently verifies the explainer's narration against these numbers --
+see the ["Limitations"](#limitations) note on explanation grounding.
 
 ## Project layout
 
 ```
 src/ds_crew/
-  main.py           CLI entrypoint; owns the MLflow run lifecycle
-  crew.py           Agent/Task/Crew wiring (tools, guardrails, output schemas, HITL flags)
   state.py          DataStore/RunState -- the actual DataFrames live here, never in LLM context
-  schemas.py        Pydantic models for every plan/report passed between tasks
-  guardrails.py     Function-based CrewAI Task guardrails
-  settings.py       Env-driven constants (model, budgets, MLflow config, AUTO_APPROVE)
-  usage_listener.py Per-task/per-agent token + retry accounting off CrewAI's event bus
+  schemas.py        Pydantic models for every plan/report passed between tools
+  settings.py       Env-driven constants (Foundry endpoint, budgets, MLflow config, AUTO_APPROVE)
   config/
-    agents.yaml     Agent role/goal/backstory
-    tasks.yaml      Task descriptions, context wiring
+    agents.yaml     Per-agent role/goal/backstory -- the source Foundry instructions render from
+    tasks.yaml      Per-task descriptions, context wiring -- same role
   tools/
+    base.py            Tool -- the base class every tool below subclasses
     eda_tools.py       Read-only profiling
     cleaning_tools.py  Missing-value/outlier/dtype cleaning
     feature_tools.py   Train/test split, encoding, scaling, feature selection
@@ -365,75 +290,45 @@ src/ds_crew/
     eval_tools.py      Held-out evaluation
     explain_tools.py   SHAP + permutation attributions, surrogate, local examples
     logging_tools.py   MLflow helpers + the finalize_run tool
-  service/          Optional HTTP surface over the tool layer (see below)
+  service/          HTTP surface over the tool layer -- the tools' only caller
     app.py            FastAPI app; routes generated from the tool registry
     registry.py       Which tools are published, read off the tool classes
     mcp_app.py        MCP surface over the same registry (what Foundry agents use)
     __main__.py       `ds-crew-service` entrypoint
+  foundry/          Optional driver for the eight agents hosted in Azure AI Foundry
+    stages.py         The pipeline order, explicit -- Foundry has nowhere to put it
+    runner.py         Agent invocation, transport retry, the human-approval loop
+    orchestrator.py   Stage sequencing, context carry-forward, preflight, cost report
+    __main__.py       `ds-crew-foundry` entrypoint
 docs/
   model-selection.md  Measured per-agent cost + which model each agent should run
-tests/              Unit tests for every tool/guardrail/schema (no LLM calls)
-tests/e2e/          Full pipeline test; requires a live LLM key, opt-in via `-m e2e`
+tests/              Unit tests for every tool/schema (no LLM calls) and the foundry orchestrator (against fakes)
 ```
 
 ## Configuration
 
 `.env` (copy from `.env.example`) configures:
 
-- **LLM** -- `MODEL`, provider-agnostic via CrewAI's native provider routing
-  (`gpt-4o`, `anthropic/claude-sonnet-4-5-...`, `ollama/llama3`, ...), or
-  `LLM_BASE_URL` + `LLM_API_KEY` for any other OpenAI-compatible endpoint
-  (e.g. NVIDIA NIM), or `AZURE_FOUNDRY_ENDPOINT` + `AZURE_FOUNDRY_API_KEY` for
-  Azure AI Foundry (see below). `MAX_RPM` caps aggregate LLM calls/minute
-  across the crew.
-- **MLflow** -- `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_NAME`.
-- **Guardrails/budgets** -- `AUTO_APPROVE`, `MAX_HPO_TRIALS`,
-  `MAX_HPO_TIMEOUT_S`, `NEAR_PERFECT_THRESHOLD`, `RANDOM_SEED`,
-  `MAX_ENSEMBLE_MEMBERS`, `ENSEMBLE_WEIGHT_TRIALS`, `MIN_ENSEMBLE_IMPROVEMENT`.
+- **Azure AI Foundry** -- `AZURE_FOUNDRY_PROJECT_ENDPOINT` (the project's
+  control plane, not a model inference endpoint; auth is Entra via
+  `az login`, not an API key).
+- **MLflow** -- `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_NAME`. Currently
+  read but unused; see the ["Limitations"](#limitations) note.
+- **Budgets** -- `AUTO_APPROVE`, `MAX_HPO_TRIALS`, `MAX_HPO_TIMEOUT_S`,
+  `NEAR_PERFECT_THRESHOLD`, `RANDOM_SEED`, `MAX_ENSEMBLE_MEMBERS`,
+  `ENSEMBLE_WEIGHT_TRIALS`, `MIN_ENSEMBLE_IMPROVEMENT`.
 - **Explainability** -- `EXPLAIN_MAX_ROWS`, `EXPLAIN_PERMUTATION_REPEATS`,
   `EXPLAIN_TOP_K_FEATURES`, `EXPLAIN_LOCAL_EXAMPLES`,
   `EXPLAIN_SURROGATE_MAX_DEPTH`.
-
-### Running against Azure AI Foundry
-
-Foundry exposes an OpenAI-compatible `/openai/v1` surface, so the crew targets it
-through the same native provider it already uses for NVIDIA NIM. **No extra
-dependency is required**: neither `crewai[azure-ai-inference]` nor
-`crewai[litellm]`.
-
-```dotenv
-MODEL=gpt-4o-ds-crew
-AZURE_FOUNDRY_ENDPOINT=https://my-resource.openai.azure.com
-AZURE_FOUNDRY_API_KEY=...
-```
-
-Paste the endpoint in whatever form the portal shows it (bare, or suffixed with
-`/models`, `/openai`, or `/openai/v1`); `crew.foundry_base_url` normalizes all of
-them. `AZURE_FOUNDRY_ENDPOINT` takes precedence over `LLM_BASE_URL`, and a missing
-key fails at crew-build time rather than as a 401 partway through a paid run.
-
-> **`MODEL` means different things per Foundry flavour**, and this is the usual
-> misconfiguration. For an **Azure OpenAI** deployment it is the *deployment name*
-> you chose, not the model name. For **Foundry Models** it is the catalog model
-> name (e.g. `Llama-3.3-70B-Instruct`).
-
-Every run tags MLflow with `llm_provider` (`native` / `custom_openai` /
-`azure_foundry`) and `model`, so token counts and `estimated_cost_usd` stay
-attributable when comparing providers.
-
-Only the version-less `/openai/v1` surface is supported. If you need the legacy
-`?api-version=` surface, set `LLM_BASE_URL` directly instead.
-
-> **numpy is capped below 2.5** in `pyproject.toml`. That bound comes from
-> `shap` -> `numba`, not from anything this project uses directly; numba 0.66.0
-> (the latest) requires `numpy<2.5`. Lift it only once numba ships numpy 2.5
-> support.
+- **Tool service** -- `SERVICE_API_KEY`, `SERVICE_PUBLIC_URL`; see below.
+- **Cost reporting** -- `LLM_PRICE_PER_1M_INPUT`, `LLM_PRICE_PER_1M_OUTPUT`.
 
 ## HTTP tool service
 
-The tool layer can also be served over HTTP, so callers outside this process (an
-Azure AI Foundry agent, or a second orchestrator) can invoke the same
-Pydantic-validated tools.
+The tool layer is served over HTTP -- this is the *only* way anything calls
+it on this branch. An Azure AI Foundry agent (over MCP) or a script (over
+REST) invokes the same Pydantic-validated tools; nothing imports them
+in-process.
 
 ```bash
 uv sync --extra service
@@ -443,9 +338,9 @@ SERVICE_API_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))") 
 
 Routes are **generated from the tool classes**, so the OpenAPI document at
 `/openapi.json` (the artifact a Foundry agent registers against) carries each
-tool's real argument schema and cannot drift from what the in-process
-orchestrator validates. Publishing a new tool means adding it to
-`service/registry.py` and nothing else.
+tool's real argument schema and cannot drift from what a caller actually
+invokes. Publishing a new tool means adding it to `service/registry.py` and
+nothing else.
 
 ```
 POST   /runs                              create a run -> {run_id, run_token}
@@ -491,17 +386,15 @@ Set `SERVICE_PUBLIC_URL` on both counts. It supplies the spec's absolute
 enables DNS-rebinding protection by default with an empty allowlist and answers
 any unrecognized `Host` with **421**, which rejects a hosted agent outright.
 
-**The in-process orchestrator does not go through this.** `ds-crew` keeps calling
-tools in-process exactly as before, so the service adds no regression risk to the
-path that already works.
-
 ### Authorization
 
-In-process, `run_id` is bound into each tool's constructor and never exposed as an
-LLM-callable argument, so a hallucinating or prompt-injected agent cannot address
-another run's data. Over HTTP `run_id` is necessarily part of the request, and a
-single shared key would let any authenticated caller reach any run, strictly
-weaker than what it replaces.
+`run_id` is bound into each tool's constructor by the caller (`app.py`/
+`mcp_app.py` do `tool_cls(run_id=run_id)`), never exposed as an
+LLM-callable argument, so a hallucinating or prompt-injected agent cannot
+address another run's data by naming a different one. But `run_id` is
+necessarily part of the HTTP request itself, and a single shared key would
+let any authenticated caller reach any run -- strictly weaker than what it
+replaces.
 
 So creating a run mints a **per-run token**, returned once. `SERVICE_API_KEY` gates
 run *creation*; the run token gates everything that touches a run's data. An agent
@@ -518,9 +411,8 @@ cross-run isolation degrades to service-level isolation on that path. Callers
 that can carry a run token still get the stronger guarantee.
 
 Ordering stays a tool-level concern: calling `explain_models` before
-`evaluate_models` returns the same `{"error": ...}` payload an in-process agent
-would see, with a 200. An out-of-order call is a decision the tool makes, not an
-HTTP failure.
+`evaluate_models` returns a `{"error": ...}` payload with a 200. An
+out-of-order call is a decision the tool makes, not an HTTP failure.
 
 ### Single replica, for now
 
@@ -530,17 +422,108 @@ scale horizontally. Scaling out means externalizing that state, and the
 `X_test`-scored-exactly-once invariant along with it, which is the part that needs
 real care rather than a storage swap.
 
+## Running on Azure AI Foundry
+
+The same eight agents can be hosted in an Azure AI Foundry project, calling this
+repo's tools over the MCP surface above. `ds_crew.foundry` drives them through a
+full pipeline run.
+
+```bash
+uv sync --extra dev --extra service --extra foundry
+az login                                    # Entra auth; the Agents API takes no API key
+
+uv run ds-crew-service --port 8000          # terminal 1: the tool layer
+uv run ds-crew-foundry \
+  --csv data/explain_smoke.csv --target target
+```
+
+It pauses at each of the four gated tools, prints the exact arguments the agent
+proposed, and waits for `y` or `n`. `--auto-approve` runs unattended.
+
+Typing `n` with a reason (`n will f1 score be a better metric`) sends the agent
+back to revise that specific proposal and re-propose, up to three rounds, rather
+than ending the run -- the reason is what the agent revises against, and it's
+already in the conversation via Foundry's `mcp_approval_response`. To actually
+abort a run, use Ctrl+C; the stages already applied stay applied, since the
+`*_applied` guards are one-shot.
+
+### The five pauses
+
+A run interactively driven this way stops five times, not four -- the last
+one is the actual decision the whole pipeline exists to protect, not a tool
+gate:
+
+| # | What pauses | What you're reviewing |
+|---|---|---|
+| 1 | `apply_cleaning_plan` | per-column imputation / outlier strategy, y/n/reason |
+| 2 | `apply_feature_plan` | encoding + scaling per column, y/n/reason |
+| 3 | `set_evaluation_metric` | the metric every later stage optimizes, y/n/reason |
+| 4 | *(no tool -- a plain prompt)* | the printed explanation report; approve or reject the recommended model |
+| 5 | `finalize_run` | approving the tool call that records whatever you decided at #4 |
+
+Pause 4 is the one to read carefully: it prints the explainer's full report
+(held-out metrics plus what the model actually learned) and asks for a real
+`y`/`n` before pause 5 ever fires, so the sign-off is made with evidence in
+front of it rather than approving a score and being shown the explanation
+afterward.
+
+### Why orchestration lives here and not in Foundry
+
+Foundry has nowhere to put a pipeline order. The agent schema has no
+`sequential` or `workflow` primitive; the `a2a` tool that would let agents hand
+off to each other is not offered on gpt-5-family deployments; and Foundry's own
+workflow construct is **retiring on 2026-12-01**, with Microsoft advising
+against new ones.
+
+That turns out to be the better outcome. DS-Crew has ordering *invariants* -- the
+CrewAI implementation uses `Process.sequential` for correctness, not preference --
+and an LLM-routed handoff makes ordering probabilistic. Driven by hand, the
+evaluator tried to call `finalize_run` before the explainer had run, and the tool
+layer did not stop it: an explanation is not a hard *prerequisite* of a sign-off,
+only a policy one. `foundry/stages.py` makes the order explicit and reviewable.
+
+### What the port gives up, and what it gains
+
+Foundry agent definitions are static, so `{run_id}` and `{target}` cannot be
+interpolated per run; the run id travels in the conversation instead. There is no
+`output_pydantic`, so proposals are prose rather than validated objects -- the
+validation still happens, just inside the tool. And two task descriptions are
+deliberately overridden for Foundry, because they are correct for CrewAI and
+wrong here: `finalize_task`'s "never end with only a question" (CrewAI has
+already collected the verdict via `human_input`; Foundry has not) and
+`explanation_task`'s implicit "explain everything".
+
+In exchange: platform content safety, per-agent tracing, continuous evaluation,
+and managed identity once the tool service is hosted rather than tunnelled.
+
+### Operational notes worth knowing up front
+
+- **Foundry's MCP client times out at 100 seconds**, and it is not configurable
+  server-side. `tune_model_hyperparameters` defaults to a 300s budget, so the
+  orchestrator's prompt pins `timeout_s=45`. On wider datasets `build_ensemble`
+  and `evaluate_models` approach the ceiling too; long tools ultimately need an
+  async job pattern.
+- **`model=` is the deployment name, not the agent name.** Passing the agent name
+  returns `Model must match the agent's model '<deployment>'`.
+- **Tools are re-enumerated on every invocation**, so one dropped MCP
+  `initialize` fails the call before the model does any work. The runner retries
+  that class of fault and lets genuine agent errors surface immediately.
+- **Preflight refuses to start** when the tool service is unreachable. A run that
+  dies midway leaves applied stages that the `*_applied` guards will not let you
+  redo.
+
 ## Cost and model selection
 
-An agentic system's running cost is LLM spend, so this repo measures it rather
-than estimating it. Every run records token counts, request count and wall-clock
-to MLflow, plus an optional `estimated_cost_usd` when `LLM_PRICE_PER_1M_INPUT` /
-`_OUTPUT` are set. `usage_listener.py` additionally attributes **every LLM call
-to the task and agent that made it**, which is what makes per-agent model choice
-a measurement instead of an opinion.
+`ds_crew.foundry.orchestrator.RunReport` records token counts and request
+count per stage for every Foundry run, plus an `estimated_cost_usd` when
+`LLM_PRICE_PER_1M_INPUT`/`_OUTPUT` are set, printed in the summary table at
+the end of the run.
 
-One measured run on a 500-row/5-column dataset, priced against Azure `gpt-5`
-rates in `eastus2`:
+The per-agent tiering that `foundry/stages.py` actually deploys
+(`ds-evaluator`/`ds-standard`, with a nano-to-mini override) was argued from
+an earlier per-agent token measurement taken through the CrewAI
+implementation on `main`. One measured run on a 500-row/5-column dataset,
+priced against Azure `gpt-5` rates in `eastus2`:
 
 | | |
 |---|---|
@@ -548,18 +531,19 @@ rates in `eastus2`:
 | All agents on gpt-5 | $0.9371/run |
 | **Tiered assignment** | **$0.2583/run** (-72%) |
 
-Two results drive that tiering, and both cut against intuition:
+Two results drove that tiering, and both cut against intuition:
 
 - **The `explainer` alone is 38% of the all-gpt-5 bill**, because output tokens
-  cost 8x input and it emits the most prose. It also has the *strongest* safety
-  net: a grounding guardrail plus a human gate.
-- **`evaluation_task` has no guardrail and no human gate**, yet the evaluator is
-  the agent responsible for flagging leakage. It is the thinnest safety net in
-  the pipeline, so it gets the strongest model regardless of its modest cost
-  share.
+  cost 8x input and it emits the most prose.
+- **`evaluation_task` had no guardrail and no human gate** in the CrewAI
+  implementation, yet the evaluator is the agent responsible for flagging
+  leakage. It was the thinnest safety net in the pipeline, so it gets the
+  strongest model regardless of its modest cost share -- the same reasoning
+  applies here, since `evaluation_task` has no human gate on this branch either.
 
 Spend follows exposure rather than job title. Full per-agent numbers, the
-safety-net map, the recommended assignment and its caveats are in
+safety-net map, the recommended assignment and its caveats -- including the
+platform-specific override for nano's lack of tool-calling support -- are in
 [docs/model-selection.md](docs/model-selection.md).
 
 ## Limitations
@@ -573,14 +557,27 @@ Stated plainly, because knowing where a system stops is part of operating it.
 - **CSV in, one dataset per run.** Data acquisition, joins, and warehouse
   connectivity are all out of scope by design.
 - **Single-process.** `DataStore` holds the DataFrames for a run in memory in one
-  process. That is fine for a CLI invocation and is *not* yet suitable for
+  process. That is fine for one service instance and is *not* yet suitable for
   distributed, multi-worker, or serverless execution. The HTTP tool service
-  inherits this: it runs one worker, and scaling it out requires externalizing
-  run state together with the `X_test`-scored-exactly-once invariant, which
-  becomes a concurrency problem rather than a storage one.
-- **Human gates block on stdin.** Interactive runs need a real terminal; they
-  cannot be backgrounded or piped. Headless automation must use `AUTO_APPROVE=1`,
-  which by design always finalizes as `rejected` since no human actually approved.
+  runs one worker, and scaling it out requires externalizing run state
+  together with the `X_test`-scored-exactly-once invariant, which becomes a
+  concurrency problem rather than a storage one.
+- **Human gates block on stdin.** `ds-crew-foundry` run interactively needs a
+  real terminal; it cannot be backgrounded or piped. Headless automation
+  must use `--auto-approve`, which by design finalizes as `rejected` unless a
+  `--verdict` is also supplied, since no human actually reviewed the run.
+- **MLflow logging is currently inert.** `tools/logging_tools.py`'s helpers
+  all no-op on `RunState.mlflow_run_id`, and nothing on this branch calls
+  `mlflow.start_run()` to set it -- that was `main.py`'s job before this
+  branch dropped CrewAI. Wiring it back in means deciding where a run's
+  MLflow lifetime begins and ends now that a run spans many independent HTTP
+  requests rather than one process. See `logging_tools.py`'s docstring.
+- **Explanation grounding has no automated check.** Nothing currently
+  verifies that the explainer's narration only cites what `explain_models`
+  actually measured. CrewAI's `guardrails.make_explanation_grounded_guardrail`
+  used to catch this via a Task-retry hook Foundry agents have no equivalent
+  of; see `explain_tools.py`'s docstring. A fabricated-but-plausible
+  attribution reaching the sign-off gate is a real, open risk.
 - **The pipeline ends at a signed-off model.** No serving, no monitoring, no
   drift detection, no scheduled retraining.
 - **SHAP is skipped for multiclass CatBoost.** Upstream `TreeExplainer` segfaults
@@ -591,14 +588,15 @@ Stated plainly, because knowing where a system stops is part of operating it.
   itself requires >=3.12. Older Pythons silently resolve to older `shap`
   (3.11 gets 0.51.0, 3.10 gets 0.49.1) whose `TreeExplainer` return shapes
   differ, so supporting them would mean shipping explainability against
-  untested versions. Python 3.10 additionally cannot install at all --
-  `crewai -> chromadb -> onnxruntime` has no cp310 wheel above 1.23.x.
-  One platform exception remains: **Intel macOS** (`darwin`/`x86_64`) resolves
-  `shap` 0.49.1 regardless of Python version, because shap caps `numba<0.63`
-  there. CI does not cover that platform, so explainability on Intel Macs is
-  unverified; Apple Silicon, Linux and Windows all get 0.52.0.
-- **`numpy` is pinned `<2.5`**, inherited from `shap -> numba`. Not a constraint
-  this project needs directly; see the note under Configuration.
+  untested versions. One platform exception remains: **Intel macOS**
+  (`darwin`/`x86_64`) resolves `shap` 0.49.1 regardless of Python version,
+  because shap caps `numba<0.63` there. CI does not cover that platform, so
+  explainability on Intel Macs is unverified; Apple Silicon, Linux and
+  Windows all get 0.52.0.
+- **`numpy` is pinned `<2.5`** in `pyproject.toml`, inherited from `shap ->
+  numba`: numba 0.66.0 (the latest) requires `numpy<2.5`, and this project
+  needs nothing from numpy directly that the pin would conflict with. Lift it
+  only once numba ships numpy 2.5 support.
 - **LLM cost is not yet a first-class budget.** Trial counts, ensemble members and
   explanation rows are all hard-capped in code, but token spend is recorded rather
   than capped.

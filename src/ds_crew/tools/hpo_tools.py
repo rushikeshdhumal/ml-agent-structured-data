@@ -21,7 +21,7 @@ import json
 import numpy as np
 import optuna
 import pandas as pd
-from crewai.tools import BaseTool
+from ds_crew.tools.base import Tool
 from pydantic import BaseModel, Field
 from sklearn.model_selection import cross_val_score
 
@@ -139,7 +139,7 @@ class TuneModelsInput(BaseModel):
     timeout_s: int = Field(default=300, ge=1, le=settings.MAX_HPO_TIMEOUT_S)
 
 
-class TuneModelsTool(BaseTool):
+class TuneModelsTool(Tool):
     name: str = "tune_model_hyperparameters"
     description: str = (
         "Runs an Optuna study per requested model over a fixed, code-defined search space. "

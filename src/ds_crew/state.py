@@ -2,9 +2,10 @@
 
 Tools never put full DataFrames into LLM context -- they read/mutate the
 actual objects held here and return compact JSON-safe summaries. `run_id` is
-bound into each tool's constructor at crew-build time (see crew.py), never
-exposed as an LLM-callable argument, so a hallucinating or prompt-injected
-agent can never address another run's data.
+bound into each tool's constructor by the caller (`service/app.py` and
+`service/mcp_app.py` both do `tool_cls(run_id=run_id)`), never exposed as an
+LLM-callable argument, so a hallucinating or prompt-injected agent can never
+address another run's data.
 """
 
 from __future__ import annotations
@@ -33,10 +34,10 @@ class RunState:
     target: str
     task_type: TaskType | None = None
     test_size: float = 0.2
-    # The actual MLflow run id (set once in main.py after mlflow.start_run()).
-    # Logging helpers require this explicitly rather than relying on
-    # mlflow.active_run(), which is thread-local and invisible from the
-    # worker thread CrewAI executes tool calls in -- see logging_tools.py.
+    # The actual MLflow run id. Nothing on this branch currently sets it --
+    # see logging_tools.py's docstring -- so every logging helper no-ops
+    # today; the field and the None-guarded helpers stay ready for whoever
+    # wires a run's HTTP lifecycle to mlflow.start_run()/end_run().
     mlflow_run_id: str | None = None
 
     # Set once the corresponding execute-stage tool has successfully mutated the

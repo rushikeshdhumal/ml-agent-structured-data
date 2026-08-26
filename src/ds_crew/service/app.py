@@ -403,12 +403,11 @@ def _make_tool_endpoint(tool_cls: type, require_run_token: Any) -> Any:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-        # `_run` rather than `run`: it is the deterministic body the in-process
-        # orchestrator ultimately reaches, without CrewAI's LLM-facing result
-        # coercion in between. Tools signal refusal by returning an {"error": ...}
-        # payload, which is passed through with a 200 exactly as an agent would
-        # see it in-process -- an out-of-order call is a tool-level decision, not
-        # an HTTP-level failure.
+        # `_run` is the tool's whole implementation -- there is no separate
+        # public `run()` wrapper to go through here. Tools signal refusal by
+        # returning an {"error": ...} payload, which is passed through with a
+        # 200: an out-of-order call is a tool-level decision, not an
+        # HTTP-level failure.
         raw = tool_cls(run_id=run_id)._run(**body)
         return _tool_result_to_json(raw)
 

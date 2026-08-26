@@ -1,8 +1,11 @@
 """Shared Pydantic models for propose/execute plans and reports.
 
-Every plan/report that a guardrail may need to inspect carries `run_id` as
-its first field, since a CrewAI Task guardrail receives nothing but the
-task's `TaskOutput` -- `run_id` is its only way back into the DataStore.
+Every plan/report a mutating tool accepts as input carries `run_id` as its
+first field. `service/app.py` cross-checks it against the URL path's run_id
+and overwrites it either way (see its `body["run_id"] = run_id` line), but
+requiring the field on the model itself keeps every plan self-describing
+independent of how it arrived -- useful for anything that inspects one
+outside the HTTP request cycle, a unit test included.
 """
 
 from __future__ import annotations

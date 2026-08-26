@@ -2,9 +2,16 @@
 
 Answers "what did this model actually learn?" for a human deciding whether to
 sign the model off. Like every other stage here, the agent never produces an
-attribution itself -- it calls this tool once and narrates what comes back,
-and `guardrails.make_explanation_grounded_guardrail` verifies the narration
-against what was actually computed.
+attribution itself -- it calls this tool once and narrates what comes back.
+
+Nothing currently verifies that narration against what this module actually
+computed. CrewAI's `guardrails.make_explanation_grounded_guardrail` used to
+check the reported model names against `state.explanation_reports`, but that
+callback only exists inside CrewAI's Task-retry loop, which this branch no
+longer has, and Foundry agents have no equivalent hook to attach one to. This
+is the gap Phase 9 of the Foundry plan means to close with a custom
+evaluator; until then, a fabricated-but-plausible attribution reaching the
+sign-off gate is a real, open risk, not a hypothetical one.
 
 Two layers, deliberately:
 
@@ -39,15 +46,12 @@ space, and it provably cannot be patched without breaking `fit()`.
 
 from __future__ import annotations
 
-import _warnings
 import json
-import warnings
-from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
 import pandas as pd
-from crewai.tools import BaseTool
+from ds_crew.tools.base import Tool
 from pydantic import BaseModel, Field
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import accuracy_score, r2_score
@@ -193,38 +197,6 @@ def _mean_abs_shap(values: np.ndarray, n_features: int) -> np.ndarray:
     return np.abs(values).mean(axis=0)
 
 
-@contextmanager
-def _unpatched_warnings():
-    """Temporarily restore CPython's real `warnings.warn` for the duration of a
-    SHAP call.
-
-    `crewai/__init__.py` monkey-patches `warnings.warn` at import time (to mute
-    pydantic deprecation warnings) with a wrapper whose signature is
-    `(message, category, stacklevel, source)` -- no `**kwargs`. shap calls
-    `warnings.warn(..., skip_file_prefixes=...)` -- a Python 3.12+ parameter --
-    from matplotlib's deprecation machinery, reached while importing
-    `shap.plots.colors`. That raises
-    `TypeError: filtered_warn() got an unexpected keyword argument
-    'skip_file_prefixes'` at **import** time, before any explaining starts.
-
-    This bites only inside the real pipeline, where crewai is always imported,
-    which is exactly why it did not show up in isolated testing: SHAP worked
-    standalone and then silently degraded to permutation-only on every actual
-    run. `_warnings.warn` is CPython's genuine builtin implementation (the one
-    `warnings.py` itself installs), so restoring it gives shap a fully
-    signature-compatible target. Scoped to the call and always restored, so
-    crewai's suppression behavior is unaffected everywhere else.
-
-    Remove once crewai's `filtered_warn` accepts `**kwargs`.
-    """
-    patched = warnings.warn
-    warnings.warn = _warnings.warn
-    try:
-        yield
-    finally:
-        warnings.warn = patched
-
-
 def compute_shap_values(
     model: Any, method: AttributionMethod, X: np.ndarray, seed: int
 ) -> np.ndarray:
@@ -234,18 +206,13 @@ def compute_shap_values(
     exercise the permutation floor) never pay shap's numba/llvmlite import
     cost. Raises on failure -- the caller isolates and degrades.
     """
-    # The import itself must be inside the guard, not just the call: shap's
-    # import chain reaches shap.plots.colors, which trips a matplotlib
-    # deprecation whose warn_external() forwards skip_file_prefixes -- so the
-    # TypeError fires at import time, before any explaining happens.
-    with _unpatched_warnings():
-        import shap
+    import shap
 
-        if method == "shap_tree":
-            return np.asarray(shap.TreeExplainer(model).shap_values(X))
+    if method == "shap_tree":
+        return np.asarray(shap.TreeExplainer(model).shap_values(X))
 
-        background = shap.maskers.Independent(X, max_samples=min(100, X.shape[0]))
-        return np.asarray(shap.LinearExplainer(model, background, seed=seed).shap_values(X))
+    background = shap.maskers.Independent(X, max_samples=min(100, X.shape[0]))
+    return np.asarray(shap.LinearExplainer(model, background, seed=seed).shap_values(X))
 
 
 def _direction_for(signed_column: np.ndarray | None) -> str | None:
@@ -540,7 +507,7 @@ class ExplainModelsInput(BaseModel):
     )
 
 
-class ExplainModelsTool(BaseTool):
+class ExplainModelsTool(Tool):
     name: str = "explain_models"
     description: str = (
         "Explains what an already-evaluated model learned: permutation importance for every "

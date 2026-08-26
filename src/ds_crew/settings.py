@@ -26,53 +26,25 @@ def _env_int(name: str, default: int) -> int:
     return int(val) if val else default
 
 
-def _env_int_or_none(name: str) -> int | None:
-    val = os.getenv(name)
-    return int(val) if val else None
-
-
 def _env_float_or_none(name: str) -> float | None:
     val = os.getenv(name)
     return float(val) if val else None
 
 
-MODEL = os.getenv("MODEL", "gpt-4o")
+# The Foundry *project* endpoint -- the project's control plane, which looks
+# like https://<account>.services.ai.azure.com/api/projects/<project>. Used
+# only by ds_crew.foundry, which drives agents hosted in that project over the
+# OpenAI-compatible Responses API rather than calling a model directly. Auth
+# is Entra (DefaultAzureCredential, i.e. `az login`), not an API key: the
+# Agents surface does not accept one.
+AZURE_FOUNDRY_PROJECT_ENDPOINT = os.getenv("AZURE_FOUNDRY_PROJECT_ENDPOINT") or None
 
-# Optional: point MODEL at any OpenAI-compatible endpoint (NVIDIA NIM, Together,
-# Groq, a local vLLM server, ...) that isn't one of CrewAI's built-in named
-# providers. When LLM_BASE_URL is set, crew.py routes through CrewAI's native
-# custom_openai path instead of passing MODEL as a bare provider-prefixed string.
-# LLM_API_KEY falls back to the provider's own env var (e.g. OPENAI_API_KEY) if unset.
-LLM_BASE_URL = os.getenv("LLM_BASE_URL") or None
-LLM_API_KEY = os.getenv("LLM_API_KEY") or None
-
-# Azure AI Foundry. Set the endpoint copied from the Foundry portal (any of the
-# forms crew.foundry_base_url normalizes) and a key, and the crew runs against a
-# Foundry deployment. Takes precedence over LLM_BASE_URL when both are set.
-#
-# This deliberately reuses the OpenAI-compatible path rather than adding
-# crewai[azure-ai-inference] or crewai[litellm]: Foundry exposes an
-# OpenAI-compatible `/openai/v1` surface, so the provider CrewAI already ships
-# natively can talk to it unchanged. Given how much of this project's
-# dependency surface is already load-bearing (see pyproject.toml's numpy/numba
-# comments), not adding a heavy provider SDK for an endpoint that speaks a
-# protocol we already support is the cheaper and more stable trade.
-#
-# MODEL means different things per Foundry flavour, and this is the most common
-# misconfiguration: for an Azure OpenAI deployment it is the *deployment name*
-# you chose, not the model name; for Foundry Models it is the catalog model name.
-AZURE_FOUNDRY_ENDPOINT = os.getenv("AZURE_FOUNDRY_ENDPOINT") or None
-AZURE_FOUNDRY_API_KEY = os.getenv("AZURE_FOUNDRY_API_KEY") or None
-
-# Caps aggregate LLM calls per minute across the whole crew (CrewAI's RPMController).
-# Leave unset for no cap; set it to stay under a provider's free-tier rate limit.
-MAX_RPM = _env_int_or_none("MAX_RPM")
-
-# Optional per-million-token rates for the configured MODEL, used only to turn
-# the token counts CrewAI reports into an estimated USD figure in MLflow. Left
-# unset by default and deliberately so: with no rates configured no cost metric
-# is logged at all, which honestly represents a free-tier endpoint (e.g. NVIDIA
-# NIM) rather than asserting a misleading $0.00. Rates are provider- and
+# Optional per-million-token rates for whichever deployment a Foundry stage
+# uses (ds_crew.foundry.stages pins one per stage), used only to turn the
+# token counts the Responses API reports into an estimated USD figure. Left
+# unset by default and deliberately so: with no rates configured no cost
+# metric is logged at all, which honestly represents an unpriced or free-tier
+# endpoint rather than asserting a misleading $0.00. Rates are provider- and
 # model-specific and go stale, so they belong in .env, not in code.
 LLM_PRICE_PER_1M_INPUT = _env_float_or_none("LLM_PRICE_PER_1M_INPUT")
 LLM_PRICE_PER_1M_OUTPUT = _env_float_or_none("LLM_PRICE_PER_1M_OUTPUT")

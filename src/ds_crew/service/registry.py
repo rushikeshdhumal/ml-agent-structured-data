@@ -1,15 +1,16 @@
 """The set of tools the HTTP service exposes, derived from the tool classes themselves.
 
 Nothing here restates a tool's name, argument schema or description: all three are
-read off the CrewAI `BaseTool` subclass, so the HTTP surface and the OpenAPI spec
-generated from it cannot drift from what the in-process orchestrator calls. Adding
+read off the `Tool` subclass itself, so the HTTP surface and the OpenAPI spec
+generated from it cannot drift from what a caller actually invokes. Adding
 a tool to `TOOL_CLASSES` is the only step needed to publish it.
 """
 
 from __future__ import annotations
 
-from crewai.tools import BaseTool
 from pydantic import BaseModel
+
+from ds_crew.tools.base import Tool
 
 from ds_crew.tools.cleaning_tools import ApplyCleaningPlanTool
 from ds_crew.tools.eda_tools import EdaSummaryTool
@@ -26,7 +27,7 @@ from ds_crew.tools.model_tools import SetMetricTool, TrainCandidateModelsTool
 # ExplainModelsTool requires evaluation_applied, and the *_applied flags reject a
 # second application) -- but listing them in pipeline order makes the generated
 # OpenAPI spec readable to whoever is wiring an agent against it.
-TOOL_CLASSES: tuple[type[BaseTool], ...] = (
+TOOL_CLASSES: tuple[type[Tool], ...] = (
     EdaSummaryTool,
     ApplyCleaningPlanTool,
     ApplyFeaturePlanTool,
@@ -40,7 +41,7 @@ TOOL_CLASSES: tuple[type[BaseTool], ...] = (
 )
 
 
-def tool_name_of(tool_cls: type[BaseTool]) -> str:
+def tool_name_of(tool_cls: type[Tool]) -> str:
     """The tool's LLM-facing name, read off the class rather than duplicated here.
 
     `name` is a Pydantic field with a default on every tool class, so the default
@@ -50,13 +51,13 @@ def tool_name_of(tool_cls: type[BaseTool]) -> str:
     return tool_cls.model_fields["name"].default
 
 
-def args_schema_of(tool_cls: type[BaseTool]) -> type[BaseModel]:
+def args_schema_of(tool_cls: type[Tool]) -> type[BaseModel]:
     """The tool's argument schema, which becomes the HTTP request body model."""
     return tool_cls.model_fields["args_schema"].default
 
 
-def description_of(tool_cls: type[BaseTool]) -> str:
+def description_of(tool_cls: type[Tool]) -> str:
     return tool_cls.model_fields["description"].default
 
 
-TOOLS_BY_NAME: dict[str, type[BaseTool]] = {tool_name_of(c): c for c in TOOL_CLASSES}
+TOOLS_BY_NAME: dict[str, type[Tool]] = {tool_name_of(c): c for c in TOOL_CLASSES}

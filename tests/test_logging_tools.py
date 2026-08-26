@@ -37,8 +37,8 @@ def test_logging_helpers_are_noop_without_run_id():
 def test_log_params_and_metrics_land_via_explicit_run_id(mlflow_run):
     # Deliberately exit the ambient `with mlflow.start_run()` context that created
     # this run before logging, to prove these calls don't depend on it being
-    # "active" -- exactly the situation tool `_run()` calls are in (a different
-    # thread than main.py's `with mlflow.start_run()` block).
+    # "active" in the calling thread at all -- see logging_tools.py's docstring
+    # on why MlflowClient is used over the fluent API in the first place.
     mlflow.end_run()
     run_id = mlflow_run.info.run_id
 

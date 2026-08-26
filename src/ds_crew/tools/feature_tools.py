@@ -17,7 +17,7 @@ import json
 
 import numpy as np
 import pandas as pd
-from crewai.tools import BaseTool
+from ds_crew.tools.base import Tool
 from pydantic import BaseModel
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
@@ -151,7 +151,7 @@ def select_features(
     return X_train_sel, X_test_sel, names_sel
 
 
-class ApplyFeaturePlanTool(BaseTool):
+class ApplyFeaturePlanTool(Tool):
     name: str = "apply_feature_plan"
     description: str = (
         "MUTATES the run: builds the feature matrix from the already-split, already-cleaned "

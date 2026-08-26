@@ -11,7 +11,7 @@ import json
 import numpy as np
 import pandas as pd
 from catboost import CatBoostClassifier, CatBoostRegressor
-from crewai.tools import BaseTool
+from ds_crew.tools.base import Tool
 from lightgbm import LGBMClassifier, LGBMRegressor
 from pydantic import BaseModel, Field
 from sklearn.linear_model import ElasticNet, LogisticRegression, Ridge
@@ -166,7 +166,7 @@ class TrainCandidatesInput(BaseModel):
     cv_folds: int = Field(default=5, ge=2, le=20)
 
 
-class TrainCandidateModelsTool(BaseTool):
+class TrainCandidateModelsTool(Tool):
     name: str = "train_candidate_models"
     description: str = (
         "Read-only w.r.t. the dataset (only reads X_train/y_train). Cross-validates a fixed, "
@@ -204,7 +204,7 @@ class TrainCandidateModelsTool(BaseTool):
         return leaderboard.model_dump_json()
 
 
-class SetMetricTool(BaseTool):
+class SetMetricTool(Tool):
     name: str = "set_evaluation_metric"
     description: str = (
         "Records the human-approved optimization metric for this run. This metric drives "

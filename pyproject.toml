@@ -1,20 +1,18 @@
 [project]
 name = "ml-agent-structured-data"
 version = "0.1.0"
-description = "DS-Crew: a CrewAI multi-agent system covering the data science lifecycle for structured data: EDA, cleaning, feature engineering, model selection, HPO, evaluation, and metadata logging."
+description = "DS-Crew: a multi-agent system, hosted as Azure AI Foundry agents, covering the data science lifecycle for structured data: EDA, cleaning, feature engineering, model selection, HPO, evaluation, and metadata logging."
 readme = "README.md"
 # Floor is set by shap, and deliberately claims only what is actually tested.
 # shap 0.52.0 -- the release explain_tools.py's SHAP output-shape handling was
 # written and live-verified against -- itself requires >=3.12. Older Pythons
 # silently resolve to older shap (3.11 -> 0.51.0, 3.10 -> 0.49.1), whose
 # TreeExplainer return shapes differ, so supporting them would mean shipping
-# explainability against versions nobody has exercised. 3.10 additionally fails
-# outright: crewai -> chromadb -> onnxruntime has no cp310 wheel above 1.23.x.
+# explainability against versions nobody has exercised.
 requires-python = ">=3.12,<3.14"
 license = "MIT"
 authors = [{ name = "Rushikesh Dhumal" }]
 dependencies = [
-    "crewai[tools]>=1.15.1,<2",
     "pandas>=2.2,<3",
     # Upper bound is set by shap, not by anything this project needs directly:
     # shap depends on numba (a hard dependency on every platform except
@@ -48,20 +46,28 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The HTTP tool service (ds_crew.service). Optional because the CLI entrypoint
-# and the in-process CrewAI orchestrator never import it -- installing DS-Crew to
-# run a pipeline locally should not pull a web stack. Both packages already
-# arrive transitively today (mlflow depends on them), which is precisely why they
-# are declared here: a transitive package is not a contract, and mlflow is free
-# to drop either one in a minor release.
+# The HTTP tool service (ds_crew.service). Optional so that importing
+# ds_crew.schemas/ds_crew.tools as a library does not pull a web stack.
+# fastapi/uvicorn already arrive transitively today (mlflow depends on them),
+# which is precisely why they are declared here too: a transitive package is
+# not a contract, and mlflow is free to drop either one in a minor release.
 service = [
     "fastapi>=0.115,<1",
     "uvicorn>=0.30,<1",
     # MCP surface (service/mcp_app.py). Azure AI Foundry's gpt-5-family
-    # deployments offer the "mcp" custom tool but not "openapi", so this is the
-    # only protocol a Foundry agent can reach these tools over. Arrives
-    # transitively via crewai today, which is exactly why it is declared here.
+    # deployments offer the "mcp" custom tool but not "openapi", so this is
+    # the only protocol a Foundry agent can reach these tools over.
     "mcp>=1.2,<2",
+]
+# Driving the eight agents hosted in an Azure AI Foundry project
+# (ds_crew.foundry). Optional and isolated because azure-ai-projects pulls a
+# sizeable Azure stack (azure-core, msal, azure-storage-blob) that the tool
+# service itself never touches -- it only ever reaches ds_crew.foundry over
+# HTTP/MCP, exactly as a Foundry agent does, so running just the service
+# never pays for this extra.
+foundry = [
+    "azure-ai-projects>=2.5,<3",
+    "azure-identity>=1.19,<2",
 ]
 dev = [
     "pytest>=8.0,<9",
@@ -75,11 +81,15 @@ dev = [
     "uvicorn>=0.30,<1",
     "httpx>=0.27,<1",
     "mcp>=1.2,<2",
+    # tests/test_foundry_*.py exercise ds_crew.foundry against fakes, but the
+    # modules import azure at call time, so the dev environment needs them too.
+    "azure-ai-projects>=2.5,<3",
+    "azure-identity>=1.19,<2",
 ]
 
 [project.scripts]
-ds-crew = "ds_crew.main:main"
 ds-crew-service = "ds_crew.service.__main__:main"
+ds-crew-foundry = "ds_crew.foundry.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -89,9 +99,6 @@ build-backend = "hatchling.build"
 packages = ["src/ds_crew"]
 
 [tool.pytest.ini_options]
-markers = [
-    "e2e: end-to-end tests that require a live LLM key; skipped by default",
-]
 # Deliberately NOT parallelised with pytest-xdist. It looks like the obvious
 # win on a ~7 minute suite, but it was benchmarked and rejected: this suite is
 # already parallel *inside* scikit-learn (BASE_MODEL_KWARGS sets n_jobs/
@@ -107,27 +114,12 @@ markers = [
 # Thread pinning cannot fix the core contention either: joblib's loky
 # backend spawns *processes*, which OMP_NUM_THREADS does not govern.
 # Re-benchmark before reaching for it again; don't assume it helps.
-addopts = "-m 'not e2e'"
 testpaths = ["tests"]
-# Silence third-party Pydantic deprecation noise only. A clean run otherwise
-# emits ~190 warnings from crewai/mlflow internals, which buries anything this
-# project actually emits and makes a green run look untidy for no reason.
-# Scoped by module on purpose: a blanket `ignore::DeprecationWarning` would also
-# hide deprecations raised by ds_crew's own code, which is exactly the signal
-# worth keeping.
-# Matched by message, not by module: module-scoped filters were tried and do
-# nothing here, because crewai monkeypatches warnings.warn with an extra
-# stacklevel, so the warning is attributed to the wrong module and
-# `ignore::DeprecationWarning:crewai.agent.core` never matches.
+# Silence mlflow's internal pydantic deprecation noise only, which otherwise
+# buries anything this project actually emits. Scoped by message on purpose:
+# a blanket `ignore::DeprecationWarning` would also hide deprecations raised
+# by ds_crew's own code, which is exactly the signal worth keeping.
 filterwarnings = [
-    # crewai's own field deprecations for options this project never sets
-    # (function_calling_llm, allow_code_execution, reasoning). The second
-    # pattern is broad because pydantic's @deprecated marker emits the literal
-    # message "deprecated" with nothing to key off; accepted knowingly, since
-    # ds_crew emits no deprecations of its own for it to swallow.
-    "ignore:function_calling_llm is deprecated:DeprecationWarning",
-    "ignore:deprecated:DeprecationWarning",
-    # mlflow's internal pydantic deprecations
     "ignore:.*class-based `config`.*:DeprecationWarning",
     "ignore:.*`@model_validator` with mode=.after.*:DeprecationWarning",
 ]

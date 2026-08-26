@@ -7,6 +7,19 @@ The short version: **the most expensive agent is the best protected one, and the
 least protected agent is mid-priced.** A naive "big model for the hard-sounding
 job" assignment gets this close to backwards.
 
+> **Provenance.** This measurement was taken through the CrewAI
+> implementation (`crew.py`, `usage_listener.py`), which no longer exists on
+> this branch -- see the root README's note on why `main` and this branch
+> don't share one dependency tree. The reproduction command below only runs
+> on `main`. What survives here is the *conclusion*: the tiered assignment
+> this analysis argues for is exactly what `foundry/stages.py` deploys
+> (`ds-evaluator`/`ds-standard`/the nano-to-mini override below). The
+> "safety-net map" describes CrewAI's guardrail layer, which this branch's
+> tool layer replaced with independent per-tool validation -- see the root
+> README's Architecture section -- except for explanation grounding, which
+> has no equivalent on either branch's Foundry path; that gap is called out
+> in the README's Limitations.
+
 ## The measurement
 
 MLflow run `e3b692960a8340eb8e7c5657c20f42ba` (`per-agent-usage`), 2026-08-25.
@@ -19,14 +32,14 @@ MLflow run `e3b692960a8340eb8e7c5657c20f42ba` (`per-agent-usage`), 2026-08-25.
 | Wall clock | 8.5 min, all 8 agents and 13 tasks completed |
 | Totals | 65,664 prompt + 38,645 completion = 104,309 tokens, 29 requests |
 
-Reproduce with:
+Reproduce on `main` (this command does not exist on this branch) with:
 
 ```bash
 MODEL=nvidia/nemotron-3-super-120b-a12b AUTO_APPROVE=1 \
   uv run ds-crew --data data/explain_smoke.csv --target target --task classification
 ```
 
-Per-agent attribution comes from [`usage_listener.py`](../src/ds_crew/usage_listener.py),
+Per-agent attribution came from `usage_listener.py`,
 which buckets every `LLMCallCompletedEvent` by the `task_name` and `agent_role`
 the event carries. **Per-task sums reconcile exactly against the crew-level
 totals** (delta 0 on both prompt and completion), so no events were lost to the
