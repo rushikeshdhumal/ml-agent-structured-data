@@ -14,6 +14,7 @@ drift.
 from __future__ import annotations
 
 import inspect
+import json
 import secrets
 from typing import Any
 from urllib.parse import urlparse
@@ -57,6 +58,56 @@ def _allowed_hosts() -> list[str]:
             # port, but some clients still send the explicit one.
             hosts.append(f"{parsed.hostname}:443")
     return hosts
+
+
+def _inline_defs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Dereference `$defs` into the schema so nested shapes are stated inline.
+
+    Pydantic emits nested models as `{"$ref": "#/$defs/ColumnFeaturePlan"}` with
+    the definition in a sibling `$defs`. That is valid JSON Schema, but a client
+    that does not resolve the reference shows the model an array whose item
+    shape is *empty*, and the model then invents one.
+
+    This is not hypothetical. A Foundry agent proposing a feature plan produced
+    every top-level field correctly (`column_plans`, `features_to_drop`,
+    `feature_selection_method`, `top_k`) and got every nested field wrong,
+    inventing `name` for `column`, `encoding: "numeric"`, and fields that do not
+    exist at all (`transformer`, `drop_first`, `handle_unknown`). The failure
+    boundary was exactly the `$ref`.
+
+    Only `apply_cleaning_plan` and `apply_feature_plan` nest, and both are
+    human-gated, so this covers the two tools the pipeline can least afford to
+    have guessed at.
+
+    Advertised schema only: `Tool.fn_metadata.arg_model` still validates, so
+    this changes what a model is told, never what is enforced.
+    """
+    defs = schema.get("$defs")
+    if not defs:
+        return schema
+
+    def resolve(node: Any, seen: frozenset[str]) -> Any:
+        if isinstance(node, list):
+            return [resolve(n, seen) for n in node]
+        if not isinstance(node, dict):
+            return node
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            name = ref[len("#/$defs/") :]
+            # A self-referential model cannot be inlined without recursing
+            # forever; leave the reference in place rather than hang.
+            if name in seen or name not in defs:
+                return node
+            target = resolve(defs[name], seen | {name})
+            # Sibling keys beside a $ref (title, default) win over the target's.
+            return {**target, **{k: v for k, v in node.items() if k != "$ref"}}
+        return {k: resolve(v, seen) for k, v in node.items()}
+
+    inlined = resolve({k: v for k, v in schema.items() if k != "$defs"}, frozenset())
+    # If anything was left unresolved, $defs still has to travel with it.
+    if "$ref" in json.dumps(inlined):
+        inlined["$defs"] = defs
+    return inlined
 
 
 def _make_tool_callable(tool_cls: type) -> Any:
@@ -165,6 +216,11 @@ def build_mcp_server() -> FastMCP:
             name=tool_name_of(tool_cls),
             description=description_of(tool_cls),
         )
+    # Flatten `$ref`/`$defs` out of the advertised schemas. See `_inline_defs`:
+    # a client that does not resolve references shows the model an item schema
+    # with no fields in it, and the model fills the gap by inventing one.
+    for tool in mcp._tool_manager.list_tools():
+        tool.parameters = _inline_defs(tool.parameters)
     return mcp
 
 
