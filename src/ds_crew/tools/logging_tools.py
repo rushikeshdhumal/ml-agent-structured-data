@@ -199,7 +199,9 @@ def log_model_artifact(run_id: str | None, model: Any, artifact_path: str = "mod
 class FinalizeRunTool(Tool):
     name: str = "finalize_run"
     description: str = (
-        "Records the human's final sign-off decision for the run. If approved, logs the "
+        "Records the human's final sign-off decision for the run. selected_model must be "
+        "the exact model name already passed to evaluate_models -- copy it verbatim, don't "
+        "paraphrase or invent one, or the call is refused. If approved, logs the "
         "selected model as an MLflow artifact and tags model_status=approved. If "
         "rejected, tags model_status=rejected and logs no model artifact. Call exactly "
         "once, after evaluation."

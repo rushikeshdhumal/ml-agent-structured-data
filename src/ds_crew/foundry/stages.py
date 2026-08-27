@@ -162,7 +162,10 @@ STAGES: tuple[Stage, ...] = (
         tasks=("explanation_task",),
         prompt=(
             "Run id: {run_id}. Explain the single model the evaluator recommended. Pass "
-            "model_names containing only that model."
+            "model_names containing only that model. Before anything else in your reply, "
+            "write a line of the exact form 'Selected model: <name>' using that same name "
+            "verbatim -- finalize_run later needs this exact string and cannot see your "
+            "tool call, only this text."
         ),
         needs=("evaluation",),
         critical_context=("evaluation",),
@@ -176,7 +179,9 @@ STAGES: tuple[Stage, ...] = (
         prompt=(
             "Here is the explanation stage output.\n\n{explanation}\n\n"
             "{verdict}\n\nRecord this decision now by calling finalize_run for run "
-            "{run_id}."
+            "{run_id}. For selected_model, copy the name verbatim from the 'Selected "
+            "model: <name>' line above -- it is the exact string finalize_run requires. "
+            "Do not paraphrase it, do not invent one, and do not leave it blank."
         ),
         needs=("explanation",),
         # Resumes the evaluator's own conversation so the EvaluationBundle it
