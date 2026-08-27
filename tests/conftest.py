@@ -35,6 +35,22 @@ def _cheap_catboost_for_tests():
     BASE_MODEL_KWARGS["catboost"]["iterations"] = original
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_mlflow_tracking(tmp_path_factory):
+    """Point the whole test session at a throwaway MLflow tracking store.
+
+    `POST /runs` now opens a real MLflow run via `logging_tools.start_mlflow_run`
+    (see its docstring), so every test that creates a run through the service
+    -- not just ones that mention MLflow -- would otherwise write against
+    whatever MLFLOW_TRACKING_URI a developer's .env points at, either polluting
+    a real mlflow.db or silently no-op-ing on a locked one.
+    """
+    import mlflow
+
+    tracking_dir = tmp_path_factory.mktemp("mlflow_tracking")
+    mlflow.set_tracking_uri(f"sqlite:///{tracking_dir / 'mlflow.db'}")
+
+
 @pytest.fixture(autouse=True)
 def _clean_data_store():
     reset_data_store()

@@ -14,13 +14,23 @@ opened the run gets None back from inside a tool even while the run is
 genuinely active, silently swallowing every log call. `MlflowClient` methods
 take run_id directly and don't depend on which thread they're called from.
 
-Nothing on this branch currently sets `RunState.mlflow_run_id` -- its only
-writer was `main.py`'s `mlflow.start_run()`, removed with the rest of the
-CrewAI pipeline -- so `run_id` is always None here today and every helper
-below no-ops on its guard. Wiring this back in for the Foundry path means
-deciding where a run's MLflow lifetime begins and ends now that a run spans
-many independent HTTP requests rather than one process's
-`with mlflow.start_run():` block.
+`RunState.mlflow_run_id` is set by `start_mlflow_run()`, called once from
+`service/app.py`'s `POST /runs` -- the single place every real run is
+created, whether driven by `ds_crew.maf`, the OpenAPI surface, or a Foundry
+agent directly. That replaces `main.py`'s `mlflow.start_run()`, removed with
+the rest of the CrewAI pipeline: a run now spans many independent HTTP
+requests rather than one process's `with mlflow.start_run():` block, so the
+run is opened via `MlflowClient.create_run()` instead and threaded through
+by id, same as every other helper here. It is closed by `FinalizeRunTool`,
+the definitive end of a run's decision lifecycle; a run that crashes or is
+abandoned before finalize is left running in MLflow rather than guessed at,
+which is honest -- nothing here decided it succeeded or failed.
+
+The tracking URI/experiment (`settings.MLFLOW_TRACKING_URI`/
+`MLFLOW_EXPERIMENT_NAME`) are process-global `mlflow` state, set once at
+service startup (`service/__main__.py`) -- not passed explicitly to each
+`MlflowClient()` call below, matching how the pre-CrewAI-removal `main.py`
+configured it.
 
 `FinalizeRunTool` is the one agent-facing exception in this module:
 finalization needs an agent to communicate a human's approve/reject
@@ -65,6 +75,30 @@ _FLAVOR_BY_MODULE_PREFIX = {
 
 def _flavor_for(model: Any):
     return _FLAVOR_BY_MODULE_PREFIX.get(type(model).__module__.split(".")[0], mlflow.sklearn)
+
+
+def start_mlflow_run(ds_crew_run_id: str) -> str | None:
+    """Opens the MLflow run backing one DS-Crew run and returns its id.
+
+    Never raises -- same reasoning as `log_llm_usage`: a tracking backend
+    that's unreachable or misconfigured should degrade this run to
+    "not recorded in MLflow", not fail run creation over a logging concern.
+    Returns None on any failure, which every helper in this module already
+    treats identically to "logging was never wired up" via its `run_id` guard.
+    """
+    try:
+        client = MlflowClient()
+        experiment = client.get_experiment_by_name(settings.MLFLOW_EXPERIMENT_NAME)
+        experiment_id = (
+            experiment.experiment_id
+            if experiment is not None
+            else client.create_experiment(settings.MLFLOW_EXPERIMENT_NAME)
+        )
+        run = client.create_run(experiment_id, tags={"ds_crew.run_id": ds_crew_run_id})
+        return run.info.run_id
+    except Exception as exc:  # noqa: BLE001 -- see docstring: must not fail run creation
+        print(f"Warning: could not start MLflow run ({type(exc).__name__}: {exc})")
+        return None
 
 
 def log_params(run_id: str | None, params: dict[str, Any]) -> None:
@@ -252,6 +286,16 @@ class FinalizeRunTool(Tool):
                 mlflow_run_id,
                 {"model_status": "rejected", "selected_model": signoff.selected_model},
             )
+
+        if mlflow_run_id:
+            # FINISHED either way: MLflow's run status tracks whether the
+            # pipeline completed, not the human's decision -- that's what the
+            # model_status tag above already records, and conflating the two
+            # would make an honest rejection look like a run failure.
+            try:
+                MlflowClient().set_terminated(mlflow_run_id, status="FINISHED")
+            except Exception as exc:  # noqa: BLE001 -- see log_llm_usage's docstring
+                print(f"Warning: could not close MLflow run ({type(exc).__name__}: {exc})")
 
         state.finalize_applied = True
         state.record(

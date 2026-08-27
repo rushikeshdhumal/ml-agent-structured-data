@@ -51,6 +51,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    # Ambient `mlflow` state (tracking URI + active experiment), set once for
+    # the process rather than passed to each of logging_tools.py's MlflowClient()
+    # calls -- this service is deliberately single-process/single-worker (see
+    # below), so there is exactly one place this needs setting, matching how
+    # the pre-CrewAI-removal main.py configured it.
+    import mlflow
+
+    mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(settings.MLFLOW_EXPERIMENT_NAME)
+
     # Single worker deliberately. RunState holds DataFrames and fitted models in
     # this process's memory (see state.DataStore) and run tokens live alongside
     # them, so a second worker would serve requests that cannot see either.

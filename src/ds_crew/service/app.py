@@ -65,6 +65,7 @@ from ds_crew.service.registry import (
 )
 from ds_crew.state import get_data_store
 from ds_crew.tools.eda_tools import infer_task_type
+from ds_crew.tools.logging_tools import log_params, start_mlflow_run
 from ds_crew.tools.model_tools import ALLOWED_METRICS, METRIC_BY_TASK
 
 
@@ -304,6 +305,18 @@ def create_app() -> FastAPI:
         state.task_type = task_type
         state.test_size = body.test_size
         state.metric_name = body.metric or METRIC_BY_TASK[task_type]
+
+        state.mlflow_run_id = start_mlflow_run(run_id)
+        log_params(
+            state.mlflow_run_id,
+            {
+                "task_type": task_type,
+                "target": body.target,
+                "metric_name": state.metric_name,
+                "n_rows": len(df),
+                "n_cols": len(df.columns),
+            },
+        )
 
         return CreateRunResponse(
             run_id=run_id,

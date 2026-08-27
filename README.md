@@ -198,12 +198,12 @@ surfaces can flow back into choosing a model.
 **Metadata logging** (`tools/logging_tools.py`) is deterministic code, not
 an agent -- called directly from inside each mutating tool rather than
 depending on an agent remembering to log something. It logs against a local
-SQLite-backed MLflow store, no server required, but currently has no writer
-for a run's MLflow lifetime (`mlflow.start_run()`/`RunState.mlflow_run_id`):
-see the ["Limitations"](#limitations) note on this. Cost visibility for a
-Foundry run comes instead from `ds_crew.maf.state.PipelineState.cost_usd()`,
-printed in the summary table `ds_crew.maf.host.summarize()` writes at the end
-of every run.
+SQLite-backed MLflow store, no server required; a run's MLflow lifetime is
+opened by `POST /runs` and closed by `finalize_run` (see
+["Observability"](#observability)). Cost visibility for a Foundry run also
+comes from `ds_crew.maf.state.PipelineState.cost_usd()`, printed in the
+summary table `ds_crew.maf.host.summarize()` writes at the end of every run --
+that figure is LLM token cost, distinct from anything MLflow tracks.
 
 ### Model registry
 
@@ -335,8 +335,10 @@ tests/              Unit tests for every tool/schema (no LLM calls), plus ds_cre
 - **Azure AI Foundry** -- `AZURE_FOUNDRY_PROJECT_ENDPOINT` (the project's
   control plane, not a model inference endpoint; auth is Entra via
   `az login`, not an API key).
-- **MLflow** -- `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_NAME`. Currently
-  read but unused; see the ["Limitations"](#limitations) note.
+- **MLflow** -- `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_NAME`. The
+  *decision* record: `POST /runs` opens a run and logs it, `finalize_run`
+  closes it. See ["Observability"](#observability) for how it relates to
+  App Insights.
 - **Budgets** -- `AUTO_APPROVE`, `MAX_HPO_TRIALS`, `MAX_HPO_TIMEOUT_S`,
   `NEAR_PERFECT_THRESHOLD`, `RANDOM_SEED`, `MAX_ENSEMBLE_MEMBERS`,
   `ENSEMBLE_WEIGHT_TRIALS`, `MIN_ENSEMBLE_IMPROVEMENT`.
@@ -570,10 +572,13 @@ still created, just dropped, which is today's behavior and not a regression.
 Requires the `observability` extra (`azure-monitor-opentelemetry`).
 
 This is the *operational* record: what actually happened, per call. It is
-deliberately separate from MLflow, which is meant to be the *decision*
-record (a run's leaderboard, the model `finalize_run` recorded, the human
-verdict) -- except MLflow isn't actually wired to a run's lifecycle today;
-see the ["Limitations"](#limitations) note on `MLFLOW_TRACKING_URI`.
+deliberately separate from MLflow, the *decision* record: `POST /runs`
+opens an MLflow run (params: task type, target, metric, dataset shape) and
+`finalize_run` closes it, tagged with the human's approve/reject decision
+and, if approved, the selected model as a logged artifact. A run that
+crashes or is abandoned before `finalize_run` is left `RUNNING` in MLflow
+rather than guessed at -- checkpointing/`--resume` (above) is what actually
+recovers it.
 
 `ENABLE_SENSITIVE_TELEMETRY=1` additionally exports raw prompt/response
 content and tool-call arguments, not just metadata. Off by default -- treat
@@ -634,12 +639,6 @@ Stated plainly, because knowing where a system stops is part of operating it.
   real terminal; it cannot be backgrounded or piped. Headless automation
   must use `--auto-approve`, which by design finalizes as `rejected` unless a
   `--verdict` is also supplied, since no human actually reviewed the run.
-- **MLflow logging is currently inert.** `tools/logging_tools.py`'s helpers
-  all no-op on `RunState.mlflow_run_id`, and nothing on this branch calls
-  `mlflow.start_run()` to set it -- that was `main.py`'s job before this
-  branch dropped CrewAI. Wiring it back in means deciding where a run's
-  MLflow lifetime begins and ends now that a run spans many independent HTTP
-  requests rather than one process. See `logging_tools.py`'s docstring.
 - **Explanation grounding has no automated check.** Nothing currently
   verifies that the explainer's narration only cites what `explain_models`
   actually measured. CrewAI's `guardrails.make_explanation_grounded_guardrail`
