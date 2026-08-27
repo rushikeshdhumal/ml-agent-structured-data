@@ -116,6 +116,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote workflow diagram to {args.viz}")
         return 0
 
+    if not args.list_checkpoints and not args.csv and not args.run_id and not args.resume:
+        parser.error("one of the arguments --csv --run-id --resume is required")
+
+    if args.csv and not args.target:
+        parser.error("--target is required with --csv")
+
+    # Constructed only once a mode that actually needs it survives validation
+    # above -- FileCheckpointStorage creates --checkpoint-dir as a side effect
+    # of construction, which a bare/invalid invocation shouldn't trigger.
     checkpoint_storage = FileCheckpointStorage(
         args.checkpoint_dir, allowed_checkpoint_types=_CHECKPOINT_TYPES
     )
@@ -133,12 +142,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"{row['checkpoint_id']}  run={row['run_id'] or '?'}  {progress}  {row['timestamp']}")
         return 0
-
-    if not args.csv and not args.run_id and not args.resume:
-        parser.error("one of the arguments --csv --run-id --resume is required")
-
-    if args.csv and not args.target:
-        parser.error("--target is required with --csv")
 
     if not args.skip_preflight:
         try:
