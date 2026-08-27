@@ -318,10 +318,12 @@ src/ds_crew/
     state.py           PipelineState -- fully serializable, carried along the workflow's edges
     transport.py       StageTransport protocol, TurnResult/PendingApproval, transport-retry wrapper
     transport_foundry.py  The one transport -- FoundryAgent-backed, one AgentSession per conversation
-    executors.py       StageExecutor (nudge/revise/forbidden-tool logic) + HumanVerdictExecutor
+    executors.py       StageExecutor (nudge/revise/forbidden-tool logic), GroundingCheckExecutor, HumanVerdictExecutor
+    evaluators.py       Deterministic leakage/grounding checks GroundingCheckExecutor runs
     workflow.py        Builds the Workflow graph from foundry/stages.py -- never by hand
     host.py            preflight/create_run, auto/interactive responders, checkpoint listing, summary
     viz.py             WorkflowViz -> Mermaid, for --viz
+    telemetry.py        Routes OTel traces to Application Insights, if configured
     __main__.py       `ds-crew-maf` entrypoint
 docs/
   model-selection.md  Measured per-agent cost + which model each agent should run
@@ -639,12 +641,18 @@ Stated plainly, because knowing where a system stops is part of operating it.
   real terminal; it cannot be backgrounded or piped. Headless automation
   must use `--auto-approve`, which by design finalizes as `rejected` unless a
   `--verdict` is also supplied, since no human actually reviewed the run.
-- **Explanation grounding has no automated check.** Nothing currently
-  verifies that the explainer's narration only cites what `explain_models`
-  actually measured. CrewAI's `guardrails.make_explanation_grounded_guardrail`
-  used to catch this via a Task-retry hook Foundry agents have no equivalent
-  of; see `explain_tools.py`'s docstring. A fabricated-but-plausible
-  attribution reaching the sign-off gate is a real, open risk.
+- **Explanation grounding has a narrow automated check, not a full one.**
+  `ds_crew.maf.evaluators.find_ungrounded_model_mentions` (run by
+  `GroundingCheckExecutor`, between `explanation` and the human verdict)
+  flags a model the narration names that was evaluated this run but that
+  `explain_models` never produced a report for -- the MAF-era equivalent of
+  CrewAI's removed `make_explanation_grounded_guardrail`. It does not verify
+  every number or feature claim within a correctly-named model's
+  explanation; a fabricated-but-plausible detail about the *right* model
+  would still reach the sign-off gate unflagged. The same node also
+  surfaces every `evaluate_models` `leakage_suspicion` flag unconditionally,
+  regardless of whether the agent's own narration mentioned it -- see
+  `explain_tools.py`'s docstring.
 - **The pipeline ends at a signed-off model.** No serving, no monitoring, no
   drift detection, no scheduled retraining.
 - **SHAP is skipped for multiclass CatBoost.** Upstream `TreeExplainer` segfaults

@@ -54,7 +54,17 @@ class FakeTransport:
         return self.scripts[stage.agent].pop(0)
 
 
-def _turn(*, conversation="resp", text="", tool_calls=(), ok=(), refused=(), pending=(), retries=0):
+def _turn(
+    *,
+    conversation="resp",
+    text="",
+    tool_calls=(),
+    ok=(),
+    refused=(),
+    tool_results=None,
+    pending=(),
+    retries=0,
+):
     return TurnResult(
         conversation=conversation,
         text=text,
@@ -63,6 +73,7 @@ def _turn(*, conversation="resp", text="", tool_calls=(), ok=(), refused=(), pen
         tool_calls=list(tool_calls),
         ok_tools=list(ok),
         refused_tools=list(refused),
+        tool_results=dict(tool_results or {}),
         pending=list(pending),
         transport_retries=retries,
     )
@@ -511,6 +522,106 @@ def test_context_is_pasted_for_stages_that_need_it():
     prompt = build_prompt(STAGES_BY_KEY["cleaning"], state)
     assert "eda findings" in prompt
     assert "### Output of the eda-analyst stage" in prompt
+
+
+# ----------------------------------------------------------------------
+# Grounding / safety checks (GroundingCheckExecutor, ds_crew.maf.evaluators)
+# ----------------------------------------------------------------------
+
+
+def _bundle(*reports):
+    import json
+
+    return json.dumps({"run_id": "r1", "reports": list(reports)})
+
+
+def _scripts_with_evaluation_and_explanation(*, evaluation_bundle, explanation_bundle, explanation_text):
+    scripts = _happy_scripts()
+    scripts["evaluator"] = [
+        _turn(
+            conversation="evaluation-resp",
+            text="evaluation ok",
+            tool_calls=["evaluate_models"],
+            ok=["evaluate_models"],
+            tool_results={"evaluate_models": evaluation_bundle},
+        ),
+        # finalize reuses the "evaluator" agent script list (see
+        # test_finalize_resumes_the_evaluation_stage_conversation).
+        _turn(
+            conversation="finalize-resp",
+            text="finalize ok",
+            tool_calls=["finalize_run"],
+            ok=["finalize_run"],
+        ),
+    ]
+    scripts["explainer"] = [
+        _turn(
+            conversation="explanation-resp",
+            text=explanation_text,
+            tool_calls=["explain_models"],
+            ok=["explain_models"],
+            tool_results={"explain_models": explanation_bundle},
+        ),
+    ]
+    return scripts
+
+
+async def test_a_clean_run_leaves_the_explanation_text_unchanged():
+    scripts = _scripts_with_evaluation_and_explanation(
+        evaluation_bundle=_bundle({"model_name": "xgboost", "leakage_suspicion": False}),
+        explanation_bundle=_bundle({"model_name": "xgboost"}),
+        explanation_text="xgboost is the recommended model.",
+    )
+    final = await _run(FakeTransport(scripts))
+    assert final.results["explanation"].text == "xgboost is the recommended model."
+
+
+async def test_leakage_suspicion_reaches_the_explanation_text_and_the_finalize_prompt():
+    scripts = _scripts_with_evaluation_and_explanation(
+        evaluation_bundle=_bundle(
+            {
+                "model_name": "xgboost",
+                "leakage_suspicion": True,
+                "notes": "Primary metric (0.999) is suspiciously close to perfect.",
+            }
+        ),
+        explanation_bundle=_bundle({"model_name": "xgboost"}),
+        explanation_text="xgboost is the recommended model.",
+    )
+    final = await _run(FakeTransport(scripts))
+
+    explanation_text = final.results["explanation"].text
+    assert "xgboost is the recommended model." in explanation_text
+    assert "AUTOMATED SAFETY CHECK" in explanation_text
+    assert "suspiciously close to perfect" in explanation_text
+
+    finalize_prompt = build_prompt(STAGES_BY_KEY["finalize"], final)
+    assert "AUTOMATED SAFETY CHECK" in finalize_prompt
+
+
+async def test_an_ungrounded_model_mention_is_flagged():
+    scripts = _scripts_with_evaluation_and_explanation(
+        evaluation_bundle=_bundle(
+            {"model_name": "xgboost", "leakage_suspicion": False},
+            {"model_name": "lightgbm", "leakage_suspicion": False},
+        ),
+        explanation_bundle=_bundle({"model_name": "xgboost"}),
+        explanation_text="I actually recommend lightgbm over the others.",
+    )
+    final = await _run(FakeTransport(scripts))
+
+    assert "lightgbm" in final.results["explanation"].text
+    assert "AUTOMATED SAFETY CHECK" in final.results["explanation"].text
+
+
+async def test_grounding_check_rewrites_explanation_in_place_not_a_new_stage():
+    scripts = _scripts_with_evaluation_and_explanation(
+        evaluation_bundle=_bundle({"model_name": "xgboost", "leakage_suspicion": True, "notes": "x"}),
+        explanation_bundle=_bundle({"model_name": "xgboost"}),
+        explanation_text="xgboost is the recommended model.",
+    )
+    final = await _run(FakeTransport(scripts))
+    assert list(final.results) == [s.key for s in STAGES]
 
 
 # ----------------------------------------------------------------------

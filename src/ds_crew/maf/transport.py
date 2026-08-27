@@ -64,6 +64,11 @@ class TurnResult:
     tool_calls: list[str] = field(default_factory=list)
     refused_tools: list[str] = field(default_factory=list)
     ok_tools: list[str] = field(default_factory=list)
+    # Tool name -> its raw JSON result text, whatever it last said (success or
+    # refusal). Discarded everywhere else once classified into ok_tools/
+    # refused_tools; kept here because ds_crew.maf.evaluators needs the actual
+    # EvaluationBundle/ExplanationBundle payload, not just which tools ran.
+    tool_results: dict[str, str] = field(default_factory=dict)
     pending: list[PendingApproval] = field(default_factory=list)
     transport_retries: int = 0
 

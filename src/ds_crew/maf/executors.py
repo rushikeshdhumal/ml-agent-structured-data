@@ -12,12 +12,18 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Any
 
 from agent_framework import Executor, WorkflowContext, handler
 
 from ds_crew.foundry.runner import StageResult
 from ds_crew.foundry.stages import STAGES_BY_KEY, Stage
+from ds_crew.maf.evaluators import (
+    find_leakage_suspicions,
+    find_ungrounded_model_mentions,
+    format_warning_block,
+)
 from ds_crew.maf.state import PipelineState
 from ds_crew.maf.transport import ConversationPoisoned, Decider, GateAnswer, StageTransport, TurnResult
 
@@ -107,6 +113,7 @@ def _absorb(turn: TurnResult, result: StageResult) -> None:
     result.tool_calls.extend(turn.tool_calls)
     result.refused_tools.extend(turn.refused_tools)
     result.ok_tools.extend(turn.ok_tools)
+    result.tool_results.update(turn.tool_results)
     if turn.text:
         result.text = f"{result.text}\n\n{turn.text}".strip() if result.text else turn.text
 
@@ -118,6 +125,7 @@ def _merge(base: StageResult, extra: StageResult) -> None:
     base.tool_calls.extend(extra.tool_calls)
     base.refused_tools.extend(extra.refused_tools)
     base.ok_tools.extend(extra.ok_tools)
+    base.tool_results.update(extra.tool_results)
     base.approvals.extend(extra.approvals)
     base.denied.extend(extra.denied)
     base.transport_retries += extra.transport_retries
@@ -330,6 +338,56 @@ class StageExecutor(Executor):
             f"{MAX_STAGE_ATTEMPTS} attempts. Nothing was applied, so the run cannot continue. "
             f"The agent's last message was:\n\n{result.text[:800]}"
         )
+
+
+class GroundingCheckExecutor(Executor):
+    """Deterministic safety-net checks between `explanation` and the human
+    verdict -- see `ds_crew.maf.evaluators` for what's actually checked and
+    why it's deterministic rather than an LLM judge.
+
+    A separate workflow node, not folded into `StageExecutor` or
+    `HumanVerdictExecutor`, for the same reason `HumanVerdictExecutor`
+    already is one: this is a first-class part of the pipeline's shape,
+    visible in `WorkflowViz`, not a hidden side effect of a stage class doing
+    something else.
+
+    Findings are appended to `explanation`'s own `StageResult.text` rather
+    than the agent's narration being policed for whether it already mentions
+    them -- that text is the one place both `interactive_verdict_collector`
+    (what a human reads before approving) and the `finalize` stage's prompt
+    (`{explanation}` in `build_prompt`) already consume, so one injection
+    point reaches both, regardless of what the agent's own prose said.
+    """
+
+    def __init__(self, log: Any = print) -> None:
+        super().__init__(id="grounding_check")
+        self._log = log
+
+    @handler
+    async def check(self, state: PipelineState, ctx: WorkflowContext[PipelineState]) -> None:
+        evaluation = state.results.get("evaluation")
+        explanation = state.results.get("explanation")
+
+        findings: list[str] = []
+        if evaluation is not None:
+            findings += find_leakage_suspicions(evaluation.tool_results.get("evaluate_models"))
+        if explanation is not None:
+            findings += find_ungrounded_model_mentions(
+                explanation.text,
+                evaluation.tool_results.get("evaluate_models") if evaluation else None,
+                explanation.tool_results.get("explain_models"),
+            )
+
+        if findings and explanation is not None:
+            self._log("    ~ automated safety check flagged:")
+            for finding in findings:
+                self._log(f"      - {finding}")
+            updated = replace(
+                explanation, text=f"{explanation.text}\n\n{format_warning_block(findings)}"
+            )
+            state = state.with_result("explanation", updated, updated.response_id)
+
+        await ctx.send_message(state)
 
 
 class HumanVerdictExecutor(Executor):

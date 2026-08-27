@@ -113,6 +113,7 @@ def _to_turn(resp: Any, conversation_id: str, retries: int, agent_name: str) -> 
                 result.tool_calls.append(last_call_name)
             elif kind == "mcp_server_tool_result":
                 text = _tool_result_text(content)
+                result.tool_results[last_call_name] = text
                 if is_already_done(text):
                     # Refused, but only because a one-shot tool's own guard
                     # says this exact action already completed -- that is the

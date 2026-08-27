@@ -2,9 +2,13 @@
 
 Nine hand-written `add_edge` calls would be a second, driftable source of
 truth for an ordering `stages.py` exists specifically to make deterministic
-and reviewable. The one structural addition beyond a straight chain is the
-human-verdict node, spliced in between `explanation` and `finalize` to mirror
-`run_pipeline`'s live verdict collection immediately before the finalize stage.
+and reviewable. Two structural additions beyond a straight chain, both spliced
+in between `explanation` and `finalize`: the deterministic safety-check node
+(`GroundingCheckExecutor`, see `ds_crew.maf.evaluators`), which must run
+before the human verdict is collected so its findings are already part of
+what a human reads; then the human-verdict node itself, mirroring
+`run_pipeline`'s live verdict collection immediately before the finalize
+stage.
 
 `WORKFLOW_NAME` must stay a fixed constant, not derived per call: a
 `WorkflowBuilder` left to name itself gets a fresh random
@@ -22,7 +26,12 @@ from typing import Any
 from agent_framework import Workflow, WorkflowBuilder
 
 from ds_crew.foundry.stages import STAGES, Stage
-from ds_crew.maf.executors import HumanVerdictExecutor, StageExecutor, VerdictCollector
+from ds_crew.maf.executors import (
+    GroundingCheckExecutor,
+    HumanVerdictExecutor,
+    StageExecutor,
+    VerdictCollector,
+)
 from ds_crew.maf.transport import Decider, StageTransport
 
 # Every run of this pipeline shares one checkpoint namespace, regardless of
@@ -52,6 +61,7 @@ def build_workflow(
         )
         for i, stage in enumerate(stages, 1)
     ]
+    grounding_check_node = GroundingCheckExecutor(log=log)
     verdict_node = HumanVerdictExecutor(collect_verdict)
 
     builder = WorkflowBuilder(
@@ -59,7 +69,8 @@ def build_workflow(
     )
     for current, following in zip(nodes, nodes[1:]):
         if following.id == "finalize":
-            builder.add_edge(current, verdict_node)
+            builder.add_edge(current, grounding_check_node)
+            builder.add_edge(grounding_check_node, verdict_node)
             builder.add_edge(verdict_node, following)
         else:
             builder.add_edge(current, following)

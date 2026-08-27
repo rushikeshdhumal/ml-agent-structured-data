@@ -4,14 +4,19 @@ Answers "what did this model actually learn?" for a human deciding whether to
 sign the model off. Like every other stage here, the agent never produces an
 attribution itself -- it calls this tool once and narrates what comes back.
 
-Nothing currently verifies that narration against what this module actually
-computed. CrewAI's `guardrails.make_explanation_grounded_guardrail` used to
-check the reported model names against `state.explanation_reports`, but that
-callback only exists inside CrewAI's Task-retry loop, which this branch no
-longer has, and Foundry agents have no equivalent hook to attach one to. This
-is the gap Phase 9 of the Foundry plan means to close with a custom
-evaluator; until then, a fabricated-but-plausible attribution reaching the
-sign-off gate is a real, open risk, not a hypothetical one.
+CrewAI's `guardrails.make_explanation_grounded_guardrail` used to check the
+reported model names against `state.explanation_reports`, but that callback
+only exists inside CrewAI's Task-retry loop, which this branch no longer has,
+and Foundry agents have no equivalent hook to attach one to.
+`ds_crew.maf.evaluators.find_ungrounded_model_mentions` is the MAF-era
+replacement, adapted for prose narration instead of a validated
+`output_pydantic` object: it flags a model the narration names that was
+*evaluated* this run but that `explain_models` never produced a report for.
+That is narrower than full grounding -- it catches "discussing the wrong
+model," not every possible fabricated number or feature claim within a
+correctly-named model's explanation, which stays an open risk. See
+`ds_crew.maf.executors.GroundingCheckExecutor` for where it runs and how its
+findings reach a human before they sign off.
 
 Two layers, deliberately:
 

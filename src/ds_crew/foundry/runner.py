@@ -100,6 +100,12 @@ class StageResult:
     # succeeds) must have the later success count, and set(tool_calls) -
     # set(refused_tools) collapses both calls to one name and erases it.
     ok_tools: list[str] = field(default_factory=list)
+    # Tool name -> its raw JSON result text, whatever it last said (success or
+    # refusal). See ds_crew.maf.transport.TurnResult's matching field -- this
+    # dataclass is shared/reused by ds_crew.maf, which needs the actual
+    # EvaluationBundle/ExplanationBundle payload for its post-hoc guardrails,
+    # not just which tools ran.
+    tool_results: dict[str, str] = field(default_factory=dict)
     approvals: list[str] = field(default_factory=list)
     denied: list[str] = field(default_factory=list)
     transport_retries: int = 0
