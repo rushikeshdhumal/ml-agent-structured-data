@@ -1,29 +1,19 @@
-"""Drive DS-Crew's eight Azure AI Foundry agents through a full pipeline run.
+"""The pipeline definition Foundry has nowhere else to put.
 
-Optional package. The tool service does not import it -- this module only ever
-calls the service over HTTP/MCP, the same way a Foundry agent does -- and it
-needs the `foundry` extra (`uv sync --extra foundry`) plus an Entra login
-(`az login`).
+On this branch (`feat/maf-workflow`), this package holds only the two things
+that survive unchanged across an orchestration-framework port: `stages.py`
+(the 9-stage pipeline graph -- pure data, zero Azure imports) and `runner.py`
+(`is_transport_error`, reused by `ds_crew.maf.transport`). The orchestrator
+that used to live here (`orchestrator.py`, its CLI) is gone: driving the
+pipeline is `ds_crew.maf`'s job now, via Microsoft Agent Framework. The tool
+service does not import either package -- it only ever gets called over
+HTTP/MCP, the same way a Foundry agent does.
 """
 
-from ds_crew.foundry.orchestrator import (
-    PreflightError,
-    RunReport,
-    build_project_client,
-    create_run,
-    preflight,
-    run_pipeline,
-)
 from ds_crew.foundry.stages import GATED_TOOLS, STAGES, Stage
 
 __all__ = [
     "GATED_TOOLS",
     "STAGES",
-    "PreflightError",
-    "RunReport",
     "Stage",
-    "build_project_client",
-    "create_run",
-    "preflight",
-    "run_pipeline",
 ]

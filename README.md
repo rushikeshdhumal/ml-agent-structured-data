@@ -23,10 +23,13 @@ code-defined pipeline order rather than an LLM-routed handoff.
 Raw data acquisition is explicitly out of scope: you hand it a CSV and a
 target column, and it takes it from there.
 
-> This branch hosts the agents entirely in Azure AI Foundry, with an external
-> Python orchestrator (`ds_crew.foundry`) driving them deterministically. An
-> earlier, self-contained CrewAI implementation (agents and orchestration both
-> running in-process, no Azure account required) lives on `main`; see
+> This branch hosts the agents entirely in Azure AI Foundry, driven by an
+> external, code-defined workflow (`ds_crew.maf`, built on [Microsoft Agent
+> Framework](https://github.com/microsoft/agent-framework)) rather than
+> Foundry's own visual Workflow UI, which retires 2026-12-01 with Microsoft's
+> own guidance pointing here instead. An earlier, self-contained CrewAI
+> implementation (agents and orchestration both running in-process, no Azure
+> account required) lives on `main`; see
 > ["Why orchestration lives here and not in Foundry"](#why-orchestration-lives-here-and-not-in-foundry)
 > for why the two don't share one dependency tree.
 
@@ -39,17 +42,21 @@ for `az login`.
 ```bash
 git clone https://github.com/rushikeshdhumal/ml-agent-structured-data.git
 cd ml-agent-structured-data
-uv sync --extra dev --extra service --extra foundry
+uv sync --extra dev --extra service --extra maf --extra foundry
 cp .env.example .env   # set AZURE_FOUNDRY_PROJECT_ENDPOINT, SERVICE_API_KEY, SERVICE_PUBLIC_URL
 az login               # Entra auth; the Agents API takes no API key
 ```
+
+Both `--extra maf` and `--extra foundry` are needed together: `agent-framework-foundry`
+(the `maf` extra) pulls its own compatible `azure-ai-projects`, but not
+`azure-identity`, which `ds_crew.maf`'s `DefaultAzureCredential` needs directly.
 
 Create the eight agents in the Foundry portal once (see "Running on Azure AI
 Foundry" below), then start the tool layer and drive a run:
 
 ```bash
 uv run ds-crew-service --port 8000          # terminal 1: the tool layer
-uv run ds-crew-foundry \
+uv run ds-crew-maf \
   --csv path/to/data.csv --target target_column
 ```
 
@@ -57,7 +64,11 @@ By default the run pauses at the tool-service's four gated tools (cleaning,
 feature engineering, the optimization metric, and the final sign-off) plus a
 live prompt to review the explanation before deciding on the model; pass
 `--auto-approve` for an unattended run (recorded as a rejection unless you
-also pass `--verdict`).
+also pass `--verdict`). Every run is checkpointed at each stage boundary, so a
+crash can be resumed with `--resume <checkpoint-id>` rather than starting over
+(`--list-checkpoints` shows what's available) -- see
+["Running on Azure AI Foundry"](#running-on-azure-ai-foundry) for what that
+looks like.
 
 Run the tests:
 
@@ -136,7 +147,7 @@ flowchart TD
     class PC,PF,PM,FIN gate
 ```
 
-👤 = human-in-the-loop gate (paused by the Foundry orchestrator on the tool
+👤 = human-in-the-loop gate (paused by `ds_crew.maf`'s workflow on the tool
 service's four gated tools)
 
 **Agents never manipulate data directly.** Every mutating action --
@@ -156,8 +167,9 @@ Pydantic-validated tool. This is enforced in layers:
 **Human-in-the-loop.** `apply_cleaning_plan` (which also performs the
 train/test split), `apply_feature_plan`, `set_evaluation_metric`, and
 `finalize_run` are MCP tools with `require_approval: always`: an agent
-proposes a call, Foundry pauses it, and `ds_crew.foundry`'s orchestrator
-shows a human the exact arguments before deciding. A denial with a reason
+proposes a call, Foundry pauses it, and `ds_crew.maf`'s workflow (built on
+Microsoft Agent Framework) shows a human the exact arguments before deciding.
+A denial with a reason
 sends the agent back to revise that specific proposal, not to abandon the
 run -- see ["Running on Azure AI Foundry"](#running-on-azure-ai-foundry) for
 what that loop actually looks like live. The final sign-off gate is a
@@ -186,8 +198,9 @@ depending on an agent remembering to log something. It logs against a local
 SQLite-backed MLflow store, no server required, but currently has no writer
 for a run's MLflow lifetime (`mlflow.start_run()`/`RunState.mlflow_run_id`):
 see the ["Limitations"](#limitations) note on this. Cost visibility for a
-Foundry run comes instead from `ds_crew.foundry.orchestrator.RunReport`,
-printed at the end of every run.
+Foundry run comes instead from `ds_crew.maf.state.PipelineState.cost_usd()`,
+printed in the summary table `ds_crew.maf.host.summarize()` writes at the end
+of every run.
 
 ### Model registry
 
@@ -295,14 +308,21 @@ src/ds_crew/
     registry.py       Which tools are published, read off the tool classes
     mcp_app.py        MCP surface over the same registry (what Foundry agents use)
     __main__.py       `ds-crew-service` entrypoint
-  foundry/          Optional driver for the eight agents hosted in Azure AI Foundry
+  foundry/          The pipeline definition Foundry has nowhere else to put
     stages.py         The pipeline order, explicit -- Foundry has nowhere to put it
-    runner.py         Agent invocation, transport retry, the human-approval loop
-    orchestrator.py   Stage sequencing, context carry-forward, preflight, cost report
-    __main__.py       `ds-crew-foundry` entrypoint
+    runner.py         is_transport_error(), reused by ds_crew.maf.transport
+  maf/              Drives the eight agents via Microsoft Agent Framework
+    state.py           PipelineState -- fully serializable, carried along the workflow's edges
+    transport.py       StageTransport protocol, TurnResult/PendingApproval, transport-retry wrapper
+    transport_foundry.py  The one transport -- FoundryAgent-backed, one AgentSession per conversation
+    executors.py       StageExecutor (nudge/revise/forbidden-tool logic) + HumanVerdictExecutor
+    workflow.py        Builds the Workflow graph from foundry/stages.py -- never by hand
+    host.py            preflight/create_run, auto/interactive responders, checkpoint listing, summary
+    viz.py             WorkflowViz -> Mermaid, for --viz
+    __main__.py       `ds-crew-maf` entrypoint
 docs/
   model-selection.md  Measured per-agent cost + which model each agent should run
-tests/              Unit tests for every tool/schema (no LLM calls) and the foundry orchestrator (against fakes)
+tests/              Unit tests for every tool/schema (no LLM calls), plus ds_crew.maf's workflow/transport (against fakes)
 ```
 
 ## Configuration
@@ -425,15 +445,16 @@ real care rather than a storage swap.
 ## Running on Azure AI Foundry
 
 The same eight agents can be hosted in an Azure AI Foundry project, calling this
-repo's tools over the MCP surface above. `ds_crew.foundry` drives them through a
-full pipeline run.
+repo's tools over the MCP surface above. `ds_crew.maf` drives them through a full
+pipeline run, via [Microsoft Agent Framework](https://github.com/microsoft/agent-framework)'s
+`WorkflowBuilder`/`Executor` graph rather than a hand-written loop.
 
 ```bash
-uv sync --extra dev --extra service --extra foundry
+uv sync --extra dev --extra service --extra maf --extra foundry
 az login                                    # Entra auth; the Agents API takes no API key
 
 uv run ds-crew-service --port 8000          # terminal 1: the tool layer
-uv run ds-crew-foundry \
+uv run ds-crew-maf \
   --csv data/explain_smoke.csv --target target
 ```
 
@@ -443,9 +464,14 @@ proposed, and waits for `y` or `n`. `--auto-approve` runs unattended.
 Typing `n` with a reason (`n will f1 score be a better metric`) sends the agent
 back to revise that specific proposal and re-propose, up to three rounds, rather
 than ending the run -- the reason is what the agent revises against, and it's
-already in the conversation via Foundry's `mcp_approval_response`. To actually
-abort a run, use Ctrl+C; the stages already applied stay applied, since the
-`*_applied` guards are one-shot.
+already in the conversation via the answered `function_approval_request`. To
+actually abort a run, use Ctrl+C; the stages already applied stay applied, since
+the `*_applied` guards are one-shot. Every run is checkpointed at each stage
+boundary, so resuming after a crash is `ds-crew-maf --resume <checkpoint-id>`
+(`--list-checkpoints` shows what's available) rather than starting over --
+though a crash mid-stage still replays that one stage, which is safe here
+precisely because the four gated tools are one-shot and refuse a genuine
+repeat cleanly.
 
 ### The five pauses
 
@@ -472,15 +498,18 @@ afterward.
 Foundry has nowhere to put a pipeline order. The agent schema has no
 `sequential` or `workflow` primitive; the `a2a` tool that would let agents hand
 off to each other is not offered on gpt-5-family deployments; and Foundry's own
-workflow construct is **retiring on 2026-12-01**, with Microsoft advising
-against new ones.
+visual Workflow UI is **retiring on 2026-12-01**, with Microsoft's own migration
+guidance pointing to Microsoft Agent Framework for new work -- which is exactly
+what `ds_crew.maf` is built on, rather than the soon-to-retire UI.
 
-That turns out to be the better outcome. DS-Crew has ordering *invariants* -- the
-CrewAI implementation uses `Process.sequential` for correctness, not preference --
-and an LLM-routed handoff makes ordering probabilistic. Driven by hand, the
-evaluator tried to call `finalize_run` before the explainer had run, and the tool
-layer did not stop it: an explanation is not a hard *prerequisite* of a sign-off,
-only a policy one. `foundry/stages.py` makes the order explicit and reviewable.
+That turns out to be the better outcome regardless of the UI's fate. DS-Crew has
+ordering *invariants* -- the CrewAI implementation uses `Process.sequential` for
+correctness, not preference -- and an LLM-routed handoff makes ordering
+probabilistic. Driven by hand, the evaluator tried to call `finalize_run` before
+the explainer had run, and the tool layer did not stop it: an explanation is not
+a hard *prerequisite* of a sign-off, only a policy one. `foundry/stages.py`
+makes the order explicit and reviewable, and `maf/workflow.py` builds the actual
+executed graph from that same list rather than a second, hand-written one.
 
 ### What the port gives up, and what it gains
 
@@ -500,24 +529,35 @@ and managed identity once the tool service is hosted rather than tunnelled.
 
 - **Foundry's MCP client times out at 100 seconds**, and it is not configurable
   server-side. `tune_model_hyperparameters` defaults to a 300s budget, so the
-  orchestrator's prompt pins `timeout_s=45`. On wider datasets `build_ensemble`
-  and `evaluate_models` approach the ceiling too; long tools ultimately need an
-  async job pattern.
+  `hpo` stage's prompt (`foundry/stages.py`) pins `timeout_s=45`. On wider
+  datasets `build_ensemble` and `evaluate_models` approach the ceiling too; long
+  tools ultimately need an async job pattern.
 - **`model=` is the deployment name, not the agent name.** Passing the agent name
   returns `Model must match the agent's model '<deployment>'`.
 - **Tools are re-enumerated on every invocation**, so one dropped MCP
-  `initialize` fails the call before the model does any work. The runner retries
-  that class of fault and lets genuine agent errors surface immediately.
-- **Preflight refuses to start** when the tool service is unreachable. A run that
-  dies midway leaves applied stages that the `*_applied` guards will not let you
-  redo.
+  `initialize` fails the call before the model does any work.
+  `ds_crew.maf.transport.with_transport_retries` retries that class of fault
+  (reusing `foundry.runner.is_transport_error`'s classification) and lets
+  genuine agent errors surface immediately.
+- **A transport fault while *answering* an approval is not safely retryable the
+  same way.** Live-verified: resending the identical (single-use) approval id
+  can leave the conversation unusable in both directions -- the client won't
+  resend it, and Foundry separately hard-rejects a plain follow-up with
+  `"The following MCP approval requests do not have an approval"`.
+  `ds_crew.maf` detects this and restarts just that stage in a fresh
+  conversation automatically; seeing "restarting the stage in a new
+  conversation" in the log is expected self-healing, not a bug.
+- **Preflight refuses to start** when the tool service is unreachable. A run
+  that dies midway can resume from its last checkpoint with `--resume` once the
+  tool service is back up (see above); without that, the `*_applied` guards
+  won't let you redo stages that already completed by starting over.
 
 ## Cost and model selection
 
-`ds_crew.foundry.orchestrator.RunReport` records token counts and request
-count per stage for every Foundry run, plus an `estimated_cost_usd` when
-`LLM_PRICE_PER_1M_INPUT`/`_OUTPUT` are set, printed in the summary table at
-the end of the run.
+`ds_crew.maf.state.PipelineState` records token counts and tool calls per
+stage for every Foundry run, plus `cost_usd()` when
+`LLM_PRICE_PER_1M_INPUT`/`_OUTPUT` are set, printed in the summary table
+`ds_crew.maf.host.summarize()` writes at the end of the run.
 
 The per-agent tiering that `foundry/stages.py` actually deploys
 (`ds-evaluator`/`ds-standard`, with a nano-to-mini override) was argued from
@@ -562,7 +602,7 @@ Stated plainly, because knowing where a system stops is part of operating it.
   runs one worker, and scaling it out requires externalizing run state
   together with the `X_test`-scored-exactly-once invariant, which becomes a
   concurrency problem rather than a storage one.
-- **Human gates block on stdin.** `ds-crew-foundry` run interactively needs a
+- **Human gates block on stdin.** A `ds-crew-maf` run interactively needs a
   real terminal; it cannot be backgrounded or piped. Headless automation
   must use `--auto-approve`, which by design finalizes as `rejected` unless a
   `--verdict` is also supplied, since no human actually reviewed the run.
