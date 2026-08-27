@@ -18,14 +18,18 @@ written -- every mechanic below is proven, not assumed:
   server-side: a direct follow-up call to the tool endpoint returned the
   idempotency guard's "already applied" refusal).
 * A tool's own outcome surfaces as `type == "mcp_server_tool_call"` (carries
-  `tool_name`) immediately followed by `type == "mcp_server_tool_result"`,
-  whose `.output` is a `list[Content]` with one `type == "text"` item whose
-  `.text` is the tool's *exact* raw JSON string -- the same shape
-  `ds_crew.foundry.runner._is_refusal` already parses. No id links a result
-  back to its call, so the tool name is carried forward positionally (the
-  last `mcp_server_tool_call` seen before a given result), mirroring how
-  `runner._absorb` already just appends to lists in encounter order rather
-  than keying by id.
+  `tool_name`, `arguments`, and `call_id`) immediately followed by
+  `type == "mcp_server_tool_result"`, whose `.output` is a `list[Content]`
+  with one `type == "text"` item whose `.text` is the tool's *exact* raw JSON
+  string -- the same shape `ds_crew.foundry.runner._is_refusal` already
+  parses. The original 2026-08-26 spike recorded "no id links a result back
+  to its call" and fell back to positional correlation (`runner._absorb`
+  appends to lists in encounter order rather than keying by id, and
+  `_to_turn`'s `tool_results` still does) -- re-checked live 2026-08-27 while
+  building `azure_evaluation.py`, and that's imprecise: `.call_id` **is**
+  present on both sides and matches (`tool_name`/`.id` are what come back
+  `None` on the result side, which is what the original check likely
+  observed). `_to_turn`'s `events` list uses the real `call_id`.
 * `usage_details` is a plain dict (`input_token_count`/`output_token_count`/
   ...) populated on every turn, tool calls or not.
 * `AgentSession()` threads per-agent conversation continuity across
@@ -72,6 +76,7 @@ from agent_framework.exceptions import ChatClientInvalidRequestException
 from agent_framework.foundry import FoundryAgent
 from azure.ai.projects import AIProjectClient
 
+from ds_crew.foundry.runner import ToolEvent
 from ds_crew.foundry.stages import Stage
 from ds_crew.maf.transport import (
     ConversationPoisoned,
@@ -108,12 +113,29 @@ def _to_turn(resp: Any, conversation_id: str, retries: int, agent_name: str) -> 
             if kind == "text":
                 if content.text:
                     texts.append(content.text)
+                    result.events.append(ToolEvent(kind="text", text=content.text))
             elif kind == "mcp_server_tool_call":
                 last_call_name = getattr(content, "tool_name", None) or "?"
                 result.tool_calls.append(last_call_name)
+                result.events.append(
+                    ToolEvent(
+                        kind="tool_call",
+                        call_id=getattr(content, "call_id", None),
+                        name=last_call_name,
+                        arguments=getattr(content, "arguments", None),
+                    )
+                )
             elif kind == "mcp_server_tool_result":
                 text = _tool_result_text(content)
                 result.tool_results[last_call_name] = text
+                result.events.append(
+                    ToolEvent(
+                        kind="tool_result",
+                        call_id=getattr(content, "call_id", None),
+                        name=last_call_name,
+                        text=text,
+                    )
+                )
                 if is_already_done(text):
                     # Refused, but only because a one-shot tool's own guard
                     # says this exact action already completed -- that is the

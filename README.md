@@ -51,8 +51,10 @@ Both `--extra maf` and `--extra foundry` are needed together: `agent-framework-f
 (the `maf` extra) pulls its own compatible `azure-ai-projects`, but not
 `azure-identity`, which `ds_crew.maf`'s `DefaultAzureCredential` needs directly.
 Add `--extra observability` too if you want traces exported to Application
-Insights (see ["Observability"](#observability)) -- it's optional, everything
-above runs without it.
+Insights (see ["Observability"](#observability)), and `--extra evaluation`
+for `--evaluate`'s Azure AI Evaluation SDK evaluators (see
+["Automated quality evaluation"](#automated-quality-evaluation)) -- both are
+optional, everything above runs without either.
 
 Create the eight agents in the Foundry portal once (see "Running on Azure AI
 Foundry" below), then start the tool layer and drive a run:
@@ -320,6 +322,7 @@ src/ds_crew/
     transport_foundry.py  The one transport -- FoundryAgent-backed, one AgentSession per conversation
     executors.py       StageExecutor (nudge/revise/forbidden-tool logic), GroundingCheckExecutor, HumanVerdictExecutor
     evaluators.py       Deterministic leakage/grounding checks GroundingCheckExecutor runs
+    azure_evaluation.py Azure AI Evaluation SDK evaluators, for --evaluate (on-demand, real cost)
     workflow.py        Builds the Workflow graph from foundry/stages.py -- never by hand
     host.py            preflight/create_run, auto/interactive responders, checkpoint listing, summary
     viz.py             WorkflowViz -> Mermaid, for --viz
@@ -352,6 +355,9 @@ tests/              Unit tests for every tool/schema (no LLM calls), plus ds_cre
 - **Observability** (ds-crew-maf) -- `APPLICATIONINSIGHTS_CONNECTION_STRING`,
   `ENABLE_SENSITIVE_TELEMETRY`. Optional; see
   ["Observability"](#observability).
+- **Evaluation** (`ds-crew-maf --evaluate`) -- `AZURE_OPENAI_ENDPOINT`,
+  `AZURE_OPENAI_JUDGE_DEPLOYMENT`. Optional, only needed for on-demand
+  evaluation; see ["Automated quality evaluation"](#automated-quality-evaluation).
 
 ## HTTP tool service
 
@@ -586,6 +592,48 @@ recovers it.
 content and tool-call arguments, not just metadata. Off by default -- treat
 it as sensitive, and don't leave it on against a shared App Insights
 resource.
+
+### Automated quality evaluation
+
+Two layers, deliberately different weights:
+
+- **Every run, free.** `ds_crew.maf.evaluators`' deterministic checks
+  (`GroundingCheckExecutor` in the pipeline diagram) run inline on every
+  live pipeline: does `evaluate_models`' `leakage_suspicion` flag actually
+  reach a human before they approve a model, and does the explainer ever
+  discuss a model that was evaluated but never actually explained.
+- **On demand, real cost.** `ds-crew-maf --evaluate <checkpoint-id>` (see
+  `--list-checkpoints` for ids) runs three Azure AI Evaluation SDK
+  evaluators against a completed run and uploads the results to the Foundry
+  project's Evaluation tab: `GroundednessEvaluator` (the LLM-judged upgrade
+  of the deterministic explanation-grounding check, scoring 1-5 whether the
+  explainer's narration is actually substantiated by `explain_models`'
+  report) on the `explanation` stage, and `TaskAdherenceEvaluator` +
+  `ToolCallAccuracyEvaluator` on every stage that made a tool call. Each is
+  a real, billed LLM-judge call -- this is on-demand, not wired into every
+  run automatically (that would be "continuous evaluation," a separate,
+  larger decision this branch doesn't make).
+
+Requires the `evaluation` extra (`azure-ai-evaluation`) and two settings
+`--extra observability` doesn't need: `AZURE_OPENAI_ENDPOINT` (the same
+`ds-crew-resource` account's plain Azure-OpenAI-compatible endpoint --
+genuinely a different hostname from `AZURE_FOUNDRY_PROJECT_ENDPOINT`, not
+derivable from it) and `AZURE_OPENAI_JUDGE_DEPLOYMENT` (defaults to
+`ds-standard`). Results also land locally at
+`runs/<run_id>/evaluation/*.json`.
+
+**A known gap in `task_adherence` scores, found live 2026-08-27:** the
+reconstructed conversation `--evaluate` builds has no representation of a
+gated tool's human-approval step (Foundry handles that out of band, not as
+a visible conversation turn), so the judge can read a correctly-approved
+gated stage as "applied without waiting for approval" and score it a
+procedural failure. Confirmed live on `cleaning` and `model_selection` in
+the same run that also caught a real issue this way: `features` scored a
+genuine failure because the agent's narration claimed drop-first one-hot
+encoding while the tool's actual output showed full one-hot (three
+indicator columns) was applied. Read a low `task_adherence` score on a
+gated stage with that caveat -- it isn't automatically a real defect. See
+`ds_crew.maf.azure_evaluation`'s module docstring.
 
 ## Cost and model selection
 

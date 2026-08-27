@@ -93,6 +93,16 @@ maf = [
 observability = [
     "azure-monitor-opentelemetry>=1.8,<2",
 ]
+# On-demand (not continuous) evaluation of a completed run via the Azure AI
+# Evaluation SDK's Groundedness/TaskAdherence/ToolCallAccuracy evaluators --
+# see ds_crew.maf.azure_evaluation and `ds-crew-maf --evaluate`. Each
+# evaluator call is a real, billed LLM-judge call against the same
+# ds-crew-resource account's plain Azure-OpenAI-compatible endpoint, not
+# the Foundry Agents surface the rest of ds_crew.maf drives. Separate from
+# `maf` because it's optional -- a normal run never touches this.
+evaluation = [
+    "azure-ai-evaluation>=1.18,<2",
+]
 dev = [
     "pytest>=8.0,<9",
     "pytest-cov>=5.0,<6",
@@ -116,6 +126,7 @@ dev = [
     "azure-identity>=1.19,<2",
     "agent-framework-foundry>=1.11,<2",
     "azure-monitor-opentelemetry>=1.8,<2",
+    "azure-ai-evaluation>=1.18,<2",
 ]
 
 [project.scripts]

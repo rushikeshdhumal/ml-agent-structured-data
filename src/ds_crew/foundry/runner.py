@@ -21,7 +21,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 # Substrings that mark a failure as transport rather than agent behaviour. Kept
 # as substrings because Foundry reports several distinct relay faults through
@@ -81,6 +81,27 @@ class ApprovalRequest:
             return self.arguments
 
 
+@dataclass(frozen=True)
+class ToolEvent:
+    """One text/tool-call/tool-result item, in the order it actually occurred.
+
+    Exists because `tool_calls`/`tool_results` below lose two things
+    `ds_crew.maf.azure_evaluation` needs to reconstruct a real conversation
+    for Azure AI Evaluation SDK evaluators: relative order (interleaving text
+    with calls/results) and per-call arguments. `call_id` links a
+    `tool_call` event to its `tool_result` -- Foundry's own `.call_id` is
+    reliable for this (re-verified live 2026-08-27; see
+    `transport_foundry.py`'s module docstring on why the original spike's
+    "no id links a result to its call" note was imprecise).
+    """
+
+    kind: Literal["text", "tool_call", "tool_result"]
+    call_id: str | None = None
+    name: str | None = None
+    arguments: str | None = None
+    text: str | None = None
+
+
 @dataclass
 class StageResult:
     text: str
@@ -106,6 +127,8 @@ class StageResult:
     # EvaluationBundle/ExplanationBundle payload for its post-hoc guardrails,
     # not just which tools ran.
     tool_results: dict[str, str] = field(default_factory=dict)
+    # Ordered, richer version of the above -- see ToolEvent's docstring.
+    events: list[ToolEvent] = field(default_factory=list)
     approvals: list[str] = field(default_factory=list)
     denied: list[str] = field(default_factory=list)
     transport_retries: int = 0

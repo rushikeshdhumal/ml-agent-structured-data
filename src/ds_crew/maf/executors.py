@@ -114,6 +114,7 @@ def _absorb(turn: TurnResult, result: StageResult) -> None:
     result.refused_tools.extend(turn.refused_tools)
     result.ok_tools.extend(turn.ok_tools)
     result.tool_results.update(turn.tool_results)
+    result.events.extend(turn.events)
     if turn.text:
         result.text = f"{result.text}\n\n{turn.text}".strip() if result.text else turn.text
 
@@ -126,6 +127,7 @@ def _merge(base: StageResult, extra: StageResult) -> None:
     base.refused_tools.extend(extra.refused_tools)
     base.ok_tools.extend(extra.ok_tools)
     base.tool_results.update(extra.tool_results)
+    base.events.extend(extra.events)
     base.approvals.extend(extra.approvals)
     base.denied.extend(extra.denied)
     base.transport_retries += extra.transport_retries

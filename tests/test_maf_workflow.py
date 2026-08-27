@@ -62,6 +62,7 @@ def _turn(
     ok=(),
     refused=(),
     tool_results=None,
+    events=None,
     pending=(),
     retries=0,
 ):
@@ -74,6 +75,7 @@ def _turn(
         ok_tools=list(ok),
         refused_tools=list(refused),
         tool_results=dict(tool_results or {}),
+        events=list(events or []),
         pending=list(pending),
         transport_retries=retries,
     )
@@ -84,7 +86,16 @@ def _pending(tool, *, agent="agent", req_id="req1", arguments="{}"):
 
 
 def _happy_scripts():
-    """One successful turn per stage, calling exactly the tool(s) it expects."""
+    """One successful turn per stage, calling exactly the tool(s) it expects.
+
+    Populates `events` with real ToolEvent instances (not just empty lists)
+    so tests exercising checkpointing actually exercise what a live run
+    produces -- an empty-events fixture would never have caught ToolEvent's
+    absence from __main__.py's checkpoint allow-list (live-caught 2026-08-27:
+    checkpoints past the first stage silently failed to decode).
+    """
+    from ds_crew.foundry.runner import ToolEvent
+
     scripts: dict[str, list[TurnResult]] = {}
     for stage in STAGES:
         turn = _turn(
@@ -92,6 +103,17 @@ def _happy_scripts():
             text=f"{stage.key} ok",
             tool_calls=list(stage.expects_tools),
             ok=list(stage.expects_tools),
+            events=[
+                ToolEvent(kind="text", text=f"{stage.key} ok"),
+                *[
+                    ToolEvent(kind="tool_call", call_id=f"call_{stage.key}_{t}", name=t, arguments="{}")
+                    for t in stage.expects_tools
+                ],
+                *[
+                    ToolEvent(kind="tool_result", call_id=f"call_{stage.key}_{t}", name=t, text="{}")
+                    for t in stage.expects_tools
+                ],
+            ],
         )
         scripts.setdefault(stage.agent, []).append(turn)
     return scripts
@@ -677,8 +699,13 @@ async def test_resuming_from_a_checkpoint_continues_rather_than_restarts(tmp_pat
     original run_id survives the round trip."""
     from agent_framework import FileCheckpointStorage
 
-    checkpoint_types = ["ds_crew.maf.state:PipelineState", "ds_crew.foundry.runner:StageResult"]
-    storage = FileCheckpointStorage(str(tmp_path), allowed_checkpoint_types=checkpoint_types)
+    from ds_crew.maf.__main__ import _CHECKPOINT_TYPES
+
+    # Uses the real allow-list, not a hand-duplicated copy: a copy here would
+    # drift silently the moment __main__.py's list changes, which is exactly
+    # how ToolEvent's absence from it went unnoticed (2026-08-27) -- this
+    # test's own scripts (_happy_scripts) already populate `events`.
+    storage = FileCheckpointStorage(str(tmp_path), allowed_checkpoint_types=_CHECKPOINT_TYPES)
 
     crashing_transport = _CrashesAfterNStarts(_happy_scripts(), crash_after=2)
     workflow1 = build_workflow(
@@ -708,7 +735,7 @@ async def test_resuming_from_a_checkpoint_continues_rather_than_restarts(tmp_pat
         transport=fresh_transport,
         decide=_always_approve,
         collect_verdict=_default_verdict,
-        checkpoint_storage=FileCheckpointStorage(str(tmp_path), allowed_checkpoint_types=checkpoint_types),
+        checkpoint_storage=FileCheckpointStorage(str(tmp_path), allowed_checkpoint_types=_CHECKPOINT_TYPES),
         log=lambda _: None,
     )
     final = await drive(workflow2, checkpoint_id=furthest["checkpoint_id"])

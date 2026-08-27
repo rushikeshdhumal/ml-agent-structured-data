@@ -39,6 +39,21 @@ def _env_float_or_none(name: str) -> float | None:
 # Agents surface does not accept one.
 AZURE_FOUNDRY_PROJECT_ENDPOINT = os.getenv("AZURE_FOUNDRY_PROJECT_ENDPOINT") or None
 
+# The same account's plain Azure-OpenAI-compatible endpoint (a different
+# hostname from the project endpoint above, e.g.
+# https://<account>.cognitiveservices.azure.com/ vs.
+# https://<account>.services.ai.azure.com/api/projects/<project> -- not
+# derivable from one another). Used only by ds_crew.maf.azure_evaluation to
+# reach a plain chat-completions deployment as an LLM judge; the Azure AI
+# Evaluation SDK's evaluators need that, not the Agents surface. Auth is
+# Entra, same as above.
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT") or None
+# Deployment used as the judge model for on-demand evaluation
+# (`ds-crew-maf --evaluate`). Deliberately the same tier most pipeline
+# stages already run on, not the cheapest available -- a judge scoring
+# other agents' work benefits from at least their own capability.
+AZURE_OPENAI_JUDGE_DEPLOYMENT = os.getenv("AZURE_OPENAI_JUDGE_DEPLOYMENT", "ds-standard")
+
 # Optional per-million-token rates for whichever deployment a Foundry stage
 # uses (ds_crew.foundry.stages pins one per stage), used only to turn the
 # token counts the Responses API reports into an estimated USD figure. Left

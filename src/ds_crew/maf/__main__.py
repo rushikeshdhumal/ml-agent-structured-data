@@ -20,6 +20,7 @@ from ds_crew.maf.host import (
     drive,
     interactive_decider,
     interactive_verdict_collector,
+    load_checkpoint_state,
     preflight,
     summarize,
 )
@@ -33,7 +34,19 @@ from ds_crew.maf.workflow import WORKFLOW_NAME, build_workflow
 # the only application types a checkpoint ever actually embeds (see
 # ds_crew.maf.state's module docstring on why PipelineState is fully
 # serializable in the first place).
-_CHECKPOINT_TYPES = ["ds_crew.maf.state:PipelineState", "ds_crew.foundry.runner:StageResult"]
+#
+# ToolEvent's absence here was a real, live-caught bug (2026-08-27): encoding
+# a checkpoint never checks this list (any type pickles fine going in), so a
+# StageResult carrying non-empty `events` looked completely healthy right up
+# until the next --list-checkpoints/--resume/--evaluate tried to decode it,
+# which silently drops any checkpoint containing a disallowed type rather
+# than raising where it'd be noticed -- surfacing as checkpoints that appear
+# stuck at 0 stages done no matter how far a run actually got.
+_CHECKPOINT_TYPES = [
+    "ds_crew.maf.state:PipelineState",
+    "ds_crew.foundry.runner:StageResult",
+    "ds_crew.foundry.runner:ToolEvent",
+]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -113,6 +126,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="List saved checkpoints (run, stages completed, timestamp) and exit.",
     )
+    parser.add_argument(
+        "--evaluate",
+        metavar="CHECKPOINT_ID",
+        default=None,
+        help=(
+            "Run Groundedness/TaskAdherence/ToolCallAccuracy (Azure AI Evaluation SDK) "
+            "against a completed run's checkpoint and exit -- see --list-checkpoints. "
+            "Real, billed LLM-judge calls, on-demand only; never run automatically by a "
+            "normal invocation. Requires the `evaluation` extra and "
+            "AZURE_OPENAI_ENDPOINT."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.viz:
@@ -122,7 +147,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote workflow diagram to {args.viz}")
         return 0
 
-    if not args.list_checkpoints and not args.csv and not args.run_id and not args.resume:
+    if (
+        not args.list_checkpoints
+        and not args.evaluate
+        and not args.csv
+        and not args.run_id
+        and not args.resume
+    ):
         parser.error("one of the arguments --csv --run-id --resume is required")
 
     if args.csv and not args.target:
@@ -147,6 +178,29 @@ def main(argv: list[str] | None = None) -> int:
                 else "terminal (no stage left pending)"
             )
             print(f"{row['checkpoint_id']}  run={row['run_id'] or '?'}  {progress}  {row['timestamp']}")
+        return 0
+
+    if args.evaluate:
+        try:
+            from ds_crew.maf.azure_evaluation import run_evaluation, stages_with_tool_calls
+        except ImportError:
+            print(
+                "azure-ai-evaluation is not installed. Install the evaluation extra: "
+                "uv sync --extra evaluation",
+                file=sys.stderr,
+            )
+            return 1
+        state = asyncio.run(load_checkpoint_state(checkpoint_storage, args.evaluate))
+        stages = stages_with_tool_calls(state)
+        print(f"Evaluating run {state.run_id} -- {len(stages)} stage(s) made a tool call\n")
+        summaries = run_evaluation(state, stages)
+        if not summaries:
+            print("Nothing to evaluate -- no stage in this checkpoint made a tool call.")
+            return 0
+        for summary in summaries:
+            print(f"{summary.evaluation_name}: {summary.rows} row(s) -> {summary.output_path}")
+            if summary.studio_url:
+                print(f"  Foundry: {summary.studio_url}")
         return 0
 
     if not args.skip_preflight:

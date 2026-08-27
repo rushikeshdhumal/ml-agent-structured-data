@@ -22,7 +22,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from ds_crew.foundry.runner import is_transport_error
+from ds_crew.foundry.runner import ToolEvent, is_transport_error
 from ds_crew.foundry.stages import Stage
 
 
@@ -69,6 +69,8 @@ class TurnResult:
     # refused_tools; kept here because ds_crew.maf.evaluators needs the actual
     # EvaluationBundle/ExplanationBundle payload, not just which tools ran.
     tool_results: dict[str, str] = field(default_factory=dict)
+    # Ordered, richer version of the above -- see foundry.runner.ToolEvent.
+    events: list[ToolEvent] = field(default_factory=list)
     pending: list[PendingApproval] = field(default_factory=list)
     transport_retries: int = 0
 

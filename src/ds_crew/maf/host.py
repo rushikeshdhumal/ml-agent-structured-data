@@ -239,6 +239,25 @@ async def describe_checkpoints(checkpoint_storage: Any, *, workflow_name: str) -
     return rows
 
 
+async def load_checkpoint_state(checkpoint_storage: Any, checkpoint_id: str) -> PipelineState:
+    """The `PipelineState` a checkpoint captured, for `--evaluate` -- which
+    reads a completed run's data rather than resuming it, so it has no
+    reason to go through `workflow.run(checkpoint_id=...)` (that would
+    re-drive the workflow from that point, not just inspect it).
+
+    Same extraction as `describe_checkpoints`: a `WorkflowCheckpoint`'s
+    `PipelineState` lives in `.messages`, keyed by whichever executor was
+    next to receive it, not in `.state`.
+    """
+    checkpoint = await checkpoint_storage.load(checkpoint_id)
+    for messages in checkpoint.messages.values():
+        for msg in messages:
+            data = getattr(msg, "data", None)
+            if isinstance(data, PipelineState):
+                return data
+    raise ValueError(f"Checkpoint {checkpoint_id!r} carries no PipelineState.")
+
+
 def summarize(state: PipelineState, log: Any = print) -> None:
     elapsed = (state.finished_at or time.time()) - state.started_at
     log("")
