@@ -66,6 +66,22 @@ SERVICE_PUBLIC_URL = os.getenv("SERVICE_PUBLIC_URL") or None
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
 MLFLOW_EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "structured-ml-crew")
 
+# Application Insights connection string for ds_crew.maf's OTel traces
+# (agent_framework emits spans by default -- this only decides where they're
+# exported to): the operational record (per-call spans, tokens, latency, the
+# model version actually served behind each stage's deployment). MLflow above
+# is meant to be the decision record (leaderboard, chosen model) but is not
+# currently wired to a run's lifecycle -- see logging_tools.py's docstring.
+# Unset is fine here: spans are still created, just dropped instead of
+# exported, which is today's behavior and not a regression.
+APPLICATIONINSIGHTS_CONNECTION_STRING = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING") or None
+
+# Off by default, matching agent_framework's own default: sensitive telemetry
+# additionally exports raw prompt/response content and tool-call arguments,
+# not just metadata (token counts, durations, operation names). Meant for
+# debugging a specific run, not left on against a shared App Insights resource.
+ENABLE_SENSITIVE_TELEMETRY = _env_bool("ENABLE_SENSITIVE_TELEMETRY", False)
+
 AUTO_APPROVE = _env_bool("AUTO_APPROVE", False)
 
 MAX_HPO_TRIALS = _env_int("MAX_HPO_TRIALS", 100)

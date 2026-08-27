@@ -24,6 +24,7 @@ from ds_crew.maf.host import (
     summarize,
 )
 from ds_crew.maf.state import PipelineState
+from ds_crew.maf.telemetry import setup_observability
 from ds_crew.maf.transport_foundry import FoundryTransport
 from ds_crew.maf.workflow import WORKFLOW_NAME, build_workflow
 
@@ -36,6 +37,11 @@ _CHECKPOINT_TYPES = ["ds_crew.maf.state:PipelineState", "ds_crew.foundry.runner:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Before any agent/workflow spans can be created, so nothing from this
+    # run is dropped -- a no-op unless APPLICATIONINSIGHTS_CONNECTION_STRING
+    # is set (see ds_crew.maf.telemetry).
+    setup_observability()
+
     parser = argparse.ArgumentParser(
         prog="ds-crew-maf",
         description=(

@@ -50,6 +50,9 @@ az login               # Entra auth; the Agents API takes no API key
 Both `--extra maf` and `--extra foundry` are needed together: `agent-framework-foundry`
 (the `maf` extra) pulls its own compatible `azure-ai-projects`, but not
 `azure-identity`, which `ds_crew.maf`'s `DefaultAzureCredential` needs directly.
+Add `--extra observability` too if you want traces exported to Application
+Insights (see ["Observability"](#observability)) -- it's optional, everything
+above runs without it.
 
 Create the eight agents in the Foundry portal once (see "Running on Azure AI
 Foundry" below), then start the tool layer and drive a run:
@@ -342,6 +345,9 @@ tests/              Unit tests for every tool/schema (no LLM calls), plus ds_cre
   `EXPLAIN_SURROGATE_MAX_DEPTH`.
 - **Tool service** -- `SERVICE_API_KEY`, `SERVICE_PUBLIC_URL`; see below.
 - **Cost reporting** -- `LLM_PRICE_PER_1M_INPUT`, `LLM_PRICE_PER_1M_OUTPUT`.
+- **Observability** (ds-crew-maf) -- `APPLICATIONINSIGHTS_CONNECTION_STRING`,
+  `ENABLE_SENSITIVE_TELEMETRY`. Optional; see
+  ["Observability"](#observability).
 
 ## HTTP tool service
 
@@ -551,6 +557,28 @@ and managed identity once the tool service is hosted rather than tunnelled.
   that dies midway can resume from its last checkpoint with `--resume` once the
   tool service is back up (see above); without that, the `*_applied` guards
   won't let you redo stages that already completed by starting over.
+
+### Observability
+
+Microsoft Agent Framework instruments every `FoundryAgent`/`Workflow` call by
+default -- spans, tokens, latency, the exact model version served behind a
+stage's deployment -- but nothing exports them anywhere unless told to. Set
+`APPLICATIONINSIGHTS_CONNECTION_STRING` (`.env.example`) and `ds-crew-maf`
+routes that telemetry to Application Insights on startup
+(`ds_crew.maf.telemetry.setup_observability`); leave it unset and spans are
+still created, just dropped, which is today's behavior and not a regression.
+Requires the `observability` extra (`azure-monitor-opentelemetry`).
+
+This is the *operational* record: what actually happened, per call. It is
+deliberately separate from MLflow, which is meant to be the *decision*
+record (a run's leaderboard, the model `finalize_run` recorded, the human
+verdict) -- except MLflow isn't actually wired to a run's lifecycle today;
+see the ["Limitations"](#limitations) note on `MLFLOW_TRACKING_URI`.
+
+`ENABLE_SENSITIVE_TELEMETRY=1` additionally exports raw prompt/response
+content and tool-call arguments, not just metadata. Off by default -- treat
+it as sensitive, and don't leave it on against a shared App Insights
+resource.
 
 ## Cost and model selection
 
