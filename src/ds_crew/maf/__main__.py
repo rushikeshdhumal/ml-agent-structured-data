@@ -138,6 +138,17 @@ def main(argv: list[str] | None = None) -> int:
             "AZURE_OPENAI_ENDPOINT."
         ),
     )
+    parser.add_argument(
+        "--check-models",
+        action="store_true",
+        help=(
+            "Report each deployment's model-retirement status (with migration "
+            "candidates if one is deprecated or close to it) and each agent's RAI "
+            "content-safety policy, then exit. On-demand only; needs "
+            "AZURE_SUBSCRIPTION_ID/AZURE_RESOURCE_GROUP/AZURE_LOCATION -- see "
+            ".env.example."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.viz:
@@ -147,9 +158,55 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote workflow diagram to {args.viz}")
         return 0
 
+    if args.check_models:
+        if not settings.AZURE_FOUNDRY_PROJECT_ENDPOINT:
+            print(
+                "AZURE_FOUNDRY_PROJECT_ENDPOINT is not set -- required for --check-models's "
+                "RAI-policy check to reach each agent. See .env.example.",
+                file=sys.stderr,
+            )
+            return 1
+
+        from azure.ai.projects import AIProjectClient
+
+        from ds_crew.maf.model_lifecycle import run_lifecycle_check
+
+        credential = DefaultAzureCredential()
+        project_client = AIProjectClient(
+            endpoint=settings.AZURE_FOUNDRY_PROJECT_ENDPOINT, credential=credential, allow_preview=True
+        )
+        try:
+            report = run_lifecycle_check(project_client, credential)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+        print("Deployment health\n" + "-" * 17)
+        for d in report.deployments:
+            status = d.lifecycle_status
+            if d.days_until_deprecation is not None:
+                status += (
+                    f" (inference deprecation {d.inference_deprecation}, "
+                    f"{d.days_until_deprecation}d away)"
+                )
+            print(f"  {d.deployment_name:<14} -> {d.model_name} {d.model_version or ''}  {status}")
+            if d.migration_candidates:
+                print(f"      migration candidates: {', '.join(d.migration_candidates)}")
+
+        print("\nAgent RAI policy\n" + "-" * 16)
+        for a in report.agents:
+            policy = a.rai_policy_name or "(inherits account default)"
+            print(f"  {a.agent:<20} {policy}")
+
+        if report.has_past_due_deprecation():
+            print("\nAt least one deployment is past its inference-deprecation date.", file=sys.stderr)
+            return 1
+        return 0
+
     if (
         not args.list_checkpoints
         and not args.evaluate
+        and not args.check_models
         and not args.csv
         and not args.run_id
         and not args.resume

@@ -54,6 +54,17 @@ AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT") or None
 # other agents' work benefits from at least their own capability.
 AZURE_OPENAI_JUDGE_DEPLOYMENT = os.getenv("AZURE_OPENAI_JUDGE_DEPLOYMENT", "ds-standard")
 
+# Management-plane coordinates for `ds-crew-maf --check-models`
+# (ds_crew.maf.model_lifecycle). Not derivable from the data-plane endpoints
+# above -- deployment/model-catalog lifecycle data (deprecation dates,
+# retirement status) only exists on the `management.azure.com` control
+# plane, scoped by subscription/resource group/location rather than by
+# account hostname. The account name itself *is* derived, from
+# AZURE_OPENAI_ENDPOINT's hostname.
+AZURE_SUBSCRIPTION_ID = os.getenv("AZURE_SUBSCRIPTION_ID") or None
+AZURE_RESOURCE_GROUP = os.getenv("AZURE_RESOURCE_GROUP") or None
+AZURE_LOCATION = os.getenv("AZURE_LOCATION", "eastus")
+
 # Optional per-million-token rates for whichever deployment a Foundry stage
 # uses (ds_crew.foundry.stages pins one per stage), used only to turn the
 # token counts the Responses API reports into an estimated USD figure. Left
@@ -81,14 +92,15 @@ SERVICE_PUBLIC_URL = os.getenv("SERVICE_PUBLIC_URL") or None
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
 MLFLOW_EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "structured-ml-crew")
 
-# Application Insights connection string for ds_crew.maf's OTel traces
-# (agent_framework emits spans by default -- this only decides where they're
-# exported to): the operational record (per-call spans, tokens, latency, the
-# model version actually served behind each stage's deployment). MLflow above
-# is meant to be the decision record (leaderboard, chosen model) but is not
-# currently wired to a run's lifecycle -- see logging_tools.py's docstring.
-# Unset is fine here: spans are still created, just dropped instead of
-# exported, which is today's behavior and not a regression.
+# Application Insights connection string for ds_crew.maf's OTel traces and
+# metrics (agent_framework emits spans by default, and ds_crew.maf.telemetry
+# adds its own refusal/denial/retry counters -- this only decides where both
+# are exported to): the operational record (per-call spans, tokens, latency,
+# the model version actually served behind each stage's deployment). MLflow
+# above is the decision record (leaderboard, chosen model, human verdict) --
+# its lifecycle is tied to a run's HTTP request cycle, see logging_tools.py.
+# Unset is fine here: spans/metrics are still created, just dropped instead
+# of exported, which is today's behavior and not a regression.
 APPLICATIONINSIGHTS_CONNECTION_STRING = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING") or None
 
 # Off by default, matching agent_framework's own default: sensitive telemetry

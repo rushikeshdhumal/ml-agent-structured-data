@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from ds_crew.maf.telemetry import setup_observability
+from ds_crew.maf.telemetry import get_meter, setup_observability
 
 
 @pytest.fixture(autouse=True)
@@ -58,3 +58,13 @@ def test_sensitive_telemetry_stays_off_unless_explicitly_enabled(monkeypatch):
     monkeypatch.setattr("ds_crew.settings.ENABLE_SENSITIVE_TELEMETRY", True)
     setup_observability()
     assert calls == [True]
+
+
+def test_get_meter_is_usable_with_no_meter_provider_configured():
+    """Safe with nothing configured -- the same property setup_observability()
+    already relies on for tracing (see StageExecutor's counters, which call
+    this unconditionally, live-run-or-not).
+    """
+    meter = get_meter()
+    counter = meter.create_counter("ds_crew.test.counter")
+    counter.add(1, {"stage": "eda"})

@@ -323,10 +323,11 @@ src/ds_crew/
     executors.py       StageExecutor (nudge/revise/forbidden-tool logic), GroundingCheckExecutor, HumanVerdictExecutor
     evaluators.py       Deterministic leakage/grounding checks GroundingCheckExecutor runs
     azure_evaluation.py Azure AI Evaluation SDK evaluators, for --evaluate (on-demand, real cost)
+    model_lifecycle.py  Deployment deprecation + agent RAI-policy visibility, for --check-models
     workflow.py        Builds the Workflow graph from foundry/stages.py -- never by hand
     host.py            preflight/create_run, auto/interactive responders, checkpoint listing, summary
     viz.py             WorkflowViz -> Mermaid, for --viz
-    telemetry.py        Routes OTel traces to Application Insights, if configured
+    telemetry.py        Routes OTel traces + failure-rate metrics to Application Insights, if configured
     __main__.py       `ds-crew-maf` entrypoint
 docs/
   model-selection.md  Measured per-agent cost + which model each agent should run
@@ -358,6 +359,9 @@ tests/              Unit tests for every tool/schema (no LLM calls), plus ds_cre
 - **Evaluation** (`ds-crew-maf --evaluate`) -- `AZURE_OPENAI_ENDPOINT`,
   `AZURE_OPENAI_JUDGE_DEPLOYMENT`. Optional, only needed for on-demand
   evaluation; see ["Automated quality evaluation"](#automated-quality-evaluation).
+- **Model lifecycle** (`ds-crew-maf --check-models`) -- `AZURE_SUBSCRIPTION_ID`,
+  `AZURE_RESOURCE_GROUP`, `AZURE_LOCATION`. Optional, only needed for this
+  on-demand check; see ["Model lifecycle checks"](#model-lifecycle-checks).
 
 ## HTTP tool service
 
@@ -579,6 +583,15 @@ routes that telemetry to Application Insights on startup
 still created, just dropped, which is today's behavior and not a regression.
 Requires the `observability` extra (`azure-monitor-opentelemetry`).
 
+Same connection string also routes three counters `StageExecutor` emits per
+stage/agent: tool refusals (a tool ran but answered with an in-band error),
+human denials of a gated tool, and transport-fault retries absorbed while
+driving a conversation. These replace the old CrewAI implementation's
+`usage_listener.py` (removed along with CrewAI) as the early-warning signal
+that a model or a tool contract is degrading -- visible in Application
+Insights' Metrics blade under `ds_crew.stage.tool_refused`/`tool_denied`/
+`transport_retries`.
+
 This is the *operational* record: what actually happened, per call. It is
 deliberately separate from MLflow, the *decision* record: `POST /runs`
 opens an MLflow run (params: task type, target, metric, dataset shape) and
@@ -634,6 +647,39 @@ encoding while the tool's actual output showed full one-hot (three
 indicator columns) was applied. Read a low `task_adherence` score on a
 gated stage with that caveat -- it isn't automatically a real defect. See
 `ds_crew.maf.azure_evaluation`'s module docstring.
+
+### Model lifecycle checks
+
+`ds-crew-maf --check-models` reports, then exits:
+
+- **Deployment health.** Cross-references `ds-standard`/`ds-evaluator`
+  against Azure's model catalog for retirement status, and lists
+  still-available, tool-calling-capable alternatives when a deployment is
+  within 90 days of (or past) its inference-deprecation date. Directly
+  motivated by a real incident: a live run failed with HTTP 410 on
+  2026-08-25 when `z-ai/glm-5.2` hit end of life four days earlier.
+- **Agent content-safety visibility.** Reads back whatever RAI
+  (Responsible AI) policy is already attached to each of the eight agents'
+  latest version. Read-only, deliberately: agents in this repo are created
+  once, by hand, in the Foundry portal (see
+  ["Running on Azure AI Foundry"](#running-on-azure-ai-foundry)), not from
+  code, so *setting* `rai_config` would mean adopting programmatic
+  agent versioning -- a materially bigger change than this check. A blank
+  policy means the agent inherits the account's default content filter, not
+  that nothing is configured.
+
+On-demand only, like `--evaluate` -- it needs a management-plane credential
+scope (`AZURE_SUBSCRIPTION_ID`/`AZURE_RESOURCE_GROUP`/`AZURE_LOCATION`) this
+project doesn't otherwise exercise. Exits 1 if any deployment is already
+past its deprecation date.
+
+**Deliberately not built:** managed identity for the tool service (the
+remaining item from the port plan's model-lifecycle phase). That only makes
+sense once the tool service is hosted on Container Apps rather than reached
+over a local dev tunnel with a static `SERVICE_API_KEY` -- undeployed, and
+previously scoped as optional-and-priced-before-committing, since an
+always-on hosted container costs roughly two orders of magnitude more per
+month than the training it exists to run. Nothing here changes that.
 
 ## Cost and model selection
 

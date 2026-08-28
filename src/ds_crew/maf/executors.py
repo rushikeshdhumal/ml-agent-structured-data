@@ -25,6 +25,7 @@ from ds_crew.maf.evaluators import (
     format_warning_block,
 )
 from ds_crew.maf.state import PipelineState
+from ds_crew.maf.telemetry import get_meter
 from ds_crew.maf.transport import ConversationPoisoned, Decider, GateAnswer, StageTransport, TurnResult
 
 # How many follow-up turns a stage gets, whether it's stalling or being told
@@ -167,6 +168,24 @@ class StageExecutor(Executor):
         self._total = total
         self._is_last = is_last
         self._log = log
+        # Phase 11: the same refusal/denial/retry counts run_stage already
+        # logs to console, also as OTel counters -- the early-warning signal
+        # that a model or a tool contract is degrading, per-stage/agent, in
+        # Application Insights' Metrics blade. Safe no-ops if
+        # setup_observability() was never called (see telemetry.get_meter()).
+        meter = get_meter()
+        self._refused_counter = meter.create_counter(
+            "ds_crew.stage.tool_refused",
+            description="Tool calls a stage's tools refused in-band (an {\"error\": ...} payload).",
+        )
+        self._denied_counter = meter.create_counter(
+            "ds_crew.stage.tool_denied",
+            description="Gated-tool calls a human declined before the agent revised and retried.",
+        )
+        self._retry_counter = meter.create_counter(
+            "ds_crew.stage.transport_retries",
+            description="Transport-fault retries absorbed while driving a stage's agent conversation.",
+        )
 
     @handler
     async def run_stage(
@@ -201,11 +220,16 @@ class StageExecutor(Executor):
             f"    done in {time.time() - started:5.1f}s | tools: {tools} | "
             f"tokens {result.input_tokens}/{result.output_tokens}"
         )
+        attrs = {"stage": stage.key, "agent": stage.agent}
         if result.refused_tools:
             self._log(f"    refused: {', '.join(sorted(set(result.refused_tools)))}")
+            self._refused_counter.add(len(result.refused_tools), attrs)
         if result.denied:
             revised = sorted(set(result.denied))
             self._log(f"    (revised after the human first declined: {', '.join(revised)})")
+            self._denied_counter.add(len(result.denied), attrs)
+        if result.transport_retries:
+            self._retry_counter.add(result.transport_retries, attrs)
 
         if self._is_last:
             await ctx.yield_output(state.finish())
