@@ -1,11 +1,14 @@
 """One MAF `Executor` per pipeline stage, plus the human-verdict node.
 
-This is the direct transcription of `ds_crew.foundry.orchestrator`'s
+This is the direct transcription of the pre-MAF hand-written orchestrator's
 `_run_stage_until_it_acts` retry loop and `_build_prompt`/`_context_block` --
 same precedence, same follow-up prompts, same exceptions -- driving a
-`StageTransport` instead of `AgentRunner` directly. See the module docstrings
-on `stages.py` and `transport_foundry.py` for why the pipeline is sequenced in
-code at all, and what the transport's content shape actually looks like.
+`StageTransport` instead of talking to Foundry's Responses API directly, the
+way that orchestrator's own `AgentRunner` (since removed, see
+`ds_crew.foundry.runner`'s module docstring) used to. See the module
+docstrings on `stages.py` and `transport_foundry.py` for why the pipeline is
+sequenced in code at all, and what the transport's content shape actually
+looks like.
 """
 
 from __future__ import annotations
@@ -107,7 +110,8 @@ def _absorb(turn: TurnResult, result: StageResult) -> None:
     """Accumulate tokens/tool outcomes/text across every approval round.
 
     Deliberately does not touch `transport_retries` -- that's tracked by the
-    caller per `_create`-equivalent call, exactly as `AgentRunner.run` does.
+    caller per request, the same granularity the pre-MAF orchestrator's
+    (since-removed) `AgentRunner.run` used.
     """
     result.input_tokens += turn.input_tokens
     result.output_tokens += turn.output_tokens
@@ -246,8 +250,9 @@ class StageExecutor(Executor):
     ) -> StageResult:
         """One full agent turn, settling every approval it raises.
 
-        Mirrors `AgentRunner.run`: an agent can raise several approvals in one
-        conversation, so this loops until a turn comes back with none.
+        Same shape as the pre-MAF orchestrator's (since-removed) `AgentRunner.run`:
+        an agent can raise several approvals in one conversation, so this loops
+        until a turn comes back with none.
 
         `restart_prompt` is always the stage's full original prompt, never
         `prompt` itself -- `prompt` is whatever this particular call is

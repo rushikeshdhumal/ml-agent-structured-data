@@ -27,9 +27,6 @@ dependencies = [
     "mlflow>=2.15,<3",
     "pydantic>=2.7,<3",
     "python-dotenv>=1.0,<2",
-    "pyyaml>=6.0,<7",
-    "matplotlib>=3.9,<4",
-    "joblib>=1.4,<2",
     "xgboost>=2.0,<3",
     "lightgbm>=4.0,<5",
     "catboost>=1.2,<2",
@@ -68,9 +65,10 @@ service = [
 #
 # Range rescoped 2026-08-26 for the MAF port: agent-framework-foundry (the
 # `maf` extra below) pins azure-ai-projects<2.4, which is a hard conflict with
-# the `>=2.5` floor this used to carry -- the same conflict shape that forced
-# crewai out of this project entirely (see GOTCHAS.md). That old floor existed
-# only for the now-deleted orchestrator.build_project_client()'s direct
+# the `>=2.5` floor this used to carry -- the same version-pin-conflict shape
+# that forced crewai out of this project entirely (a hard-conflicting
+# transitive floor with no overlapping range). That old floor existed only
+# for the now-deleted orchestrator.build_project_client()'s direct
 # AIProjectClient(allow_preview=True) call; azure-ai-projects 2.2-2.3 supports
 # the same construction, so there is no functional loss in narrowing this.
 foundry = [

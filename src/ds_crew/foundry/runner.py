@@ -1,25 +1,21 @@
-"""Invoke a Foundry-hosted agent and drive its approval pauses.
+"""Transport-fault classification, in-band refusal detection, and the result
+dataclasses `ds_crew.maf` builds on -- what's left of the hand-written
+Foundry orchestrator after `ds_crew.maf` (Microsoft Agent Framework) replaced
+its actual conversation-driving loop (the old `AgentRunner`, deleted here
+once nothing referenced it any more; see `ds_crew.maf.transport_foundry` for
+the transport that replaced it).
 
-Agents in a Foundry project are invoked through the OpenAI-compatible Responses
-API, not through a separate agents SDK: `AIProjectClient.get_openai_client(
-agent_name=...)` returns an `openai.OpenAI` pointed at
-`{endpoint}/agents/{name}/endpoint/protocols/openai`. Two details cost real time
-to discover and are pinned by tests:
-
-* `model=` must be the agent's **deployment** name, not the agent name. Passing
-  the agent name returns `Model must match the agent's model '<deployment>'`.
-* Foundry enumerates the MCP tool list at the start of **every** invocation, so
-  a single dropped `initialize` fails the whole call before the model does any
-  work, surfacing as `tool_user_error: Initialization timed out`. That is a
-  transport fault, not an agent fault, and has to be retried rather than
-  reported as a failed stage.
+Foundry enumerates the MCP tool list at the start of **every** invocation, so
+a single dropped `initialize` fails the whole call before the model does any
+work, surfacing as `tool_user_error: Initialization timed out`. That is a
+transport fault, not an agent fault, and has to be retried rather than
+reported as a failed stage -- `is_transport_error` below is what
+`ds_crew.maf.transport.with_transport_retries` classifies it with.
 """
 
 from __future__ import annotations
 
 import json
-import time
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -63,22 +59,6 @@ def _is_refusal(item: Any) -> bool:
     except (json.JSONDecodeError, ValueError):
         return '"error"' in output
     return isinstance(parsed, dict) and "error" in parsed
-
-
-@dataclass
-class ApprovalRequest:
-    """A gated tool call waiting on a human."""
-
-    id: str
-    tool: str
-    arguments: str
-    agent: str
-
-    def pretty_arguments(self) -> str:
-        try:
-            return json.dumps(json.loads(self.arguments), indent=2)
-        except (json.JSONDecodeError, TypeError):
-            return self.arguments
 
 
 @dataclass(frozen=True)
@@ -135,163 +115,3 @@ class StageResult:
 
     def succeeded_tools(self) -> set[str]:
         return set(self.ok_tools)
-
-
-# Decides one approval. Returns (approve, reason).
-ApprovalDecider = Callable[[ApprovalRequest], tuple[bool, str]]
-
-
-class AgentRunner:
-    """Runs one agent conversation to completion, pausing at gated tools."""
-
-    def __init__(
-        self,
-        project_client: Any,
-        *,
-        max_transport_retries: int = 4,
-        backoff_base_s: float = 3.0,
-        max_approval_rounds: int = 12,
-        log: Callable[[str], None] = print,
-    ) -> None:
-        self._project = project_client
-        self._clients: dict[str, Any] = {}
-        self._max_retries = max_transport_retries
-        self._backoff = backoff_base_s
-        self._max_rounds = max_approval_rounds
-        self._log = log
-
-    def _client_for(self, agent: str) -> Any:
-        if agent not in self._clients:
-            self._clients[agent] = self._project.get_openai_client(agent_name=agent)
-        return self._clients[agent]
-
-    def _create(self, agent: str, **kwargs: Any) -> tuple[Any, int]:
-        """One Responses call, retrying transport faults with backoff."""
-        retries = 0
-        last: BaseException | None = None
-        for attempt in range(self._max_retries + 1):
-            try:
-                return self._client_for(agent).responses.create(**kwargs), retries
-            except Exception as exc:  # noqa: BLE001 -- classified immediately below
-                if not is_transport_error(exc):
-                    raise
-                last = exc
-                retries += 1
-                if attempt < self._max_retries:
-                    delay = self._backoff * (attempt + 1)
-                    self._log(
-                        f"    ~ transport fault reaching the tool service "
-                        f"(retry {attempt + 1}/{self._max_retries} in {delay:.0f}s)"
-                    )
-                    time.sleep(delay)
-        assert last is not None
-        raise last
-
-    def run(
-        self,
-        *,
-        agent: str,
-        deployment: str,
-        prompt: str,
-        decide: ApprovalDecider,
-        previous_response_id: str | None = None,
-    ) -> StageResult:
-        """Send `prompt` to `agent` and settle every approval it raises.
-
-        The Responses API surfaces a gated tool as an `mcp_approval_request`
-        output item; the answer goes back as an `mcp_approval_response` input
-        item on a follow-up call carrying `previous_response_id`. An agent can
-        raise several in one conversation (model-selector gates the metric and
-        then trains), so this loops until a response comes back with none.
-        """
-        kwargs: dict[str, Any] = {"model": deployment, "input": prompt}
-        if previous_response_id:
-            kwargs["previous_response_id"] = previous_response_id
-
-        response, retries = self._create(agent, **kwargs)
-        result = StageResult(text="", response_id=response.id, transport_retries=retries)
-
-        for round_no in range(self._max_rounds):
-            self._absorb(response, result)
-            pending = self._approval_requests(response, agent)
-            if not pending:
-                break
-
-            answers: list[dict[str, Any]] = []
-            for req in pending:
-                approve, reason = decide(req)
-                (result.approvals if approve else result.denied).append(req.tool)
-                answer: dict[str, Any] = {
-                    "type": "mcp_approval_response",
-                    "approval_request_id": req.id,
-                    "approve": approve,
-                }
-                # Foundry rejects `reason` outright when approve=True:
-                # "'reason' cannot be provided when 'approve' is true." (verified
-                # live). Only a denial may explain itself.
-                if reason and not approve:
-                    answer["reason"] = reason
-                answers.append(answer)
-
-            response, retries = self._create(
-                agent,
-                model=deployment,
-                input=answers,
-                previous_response_id=response.id,
-            )
-            result.transport_retries += retries
-            result.response_id = response.id
-        else:
-            raise RuntimeError(
-                f"{agent} still requesting approvals after {self._max_rounds} rounds; "
-                "refusing to loop further."
-            )
-
-        return result
-
-    @staticmethod
-    def _approval_requests(response: Any, agent: str) -> list[ApprovalRequest]:
-        out = []
-        for item in getattr(response, "output", []) or []:
-            if getattr(item, "type", None) == "mcp_approval_request":
-                out.append(
-                    ApprovalRequest(
-                        id=item.id,
-                        tool=getattr(item, "name", "?"),
-                        arguments=getattr(item, "arguments", "") or "",
-                        agent=agent,
-                    )
-                )
-        return out
-
-    @staticmethod
-    def _absorb(response: Any, result: StageResult) -> None:
-        """Accumulate text, tool calls and tokens across every round.
-
-        Text is appended rather than replaced: the agent explains its plan in
-        one round and reports the outcome in a later one, and a human reading
-        the transcript needs both halves.
-        """
-        usage = getattr(response, "usage", None)
-        if usage:
-            result.input_tokens += getattr(usage, "input_tokens", 0) or 0
-            result.output_tokens += getattr(usage, "output_tokens", 0) or 0
-
-        chunks: list[str] = []
-        for item in getattr(response, "output", []) or []:
-            kind = getattr(item, "type", None)
-            if kind == "mcp_call":
-                name = getattr(item, "name", "?")
-                result.tool_calls.append(name)
-                if _is_refusal(item):
-                    result.refused_tools.append(name)
-                else:
-                    result.ok_tools.append(name)
-            elif kind == "message":
-                for content in getattr(item, "content", []) or []:
-                    text = getattr(content, "text", None)
-                    if text:
-                        chunks.append(text)
-        if chunks:
-            joined = "\n\n".join(chunks)
-            result.text = f"{result.text}\n\n{joined}".strip() if result.text else joined

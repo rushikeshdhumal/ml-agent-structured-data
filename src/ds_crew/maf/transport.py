@@ -28,7 +28,7 @@ from ds_crew.foundry.stages import Stage
 
 @dataclass(frozen=True)
 class PendingApproval:
-    """A gated tool call waiting on a human. Mirrors `runner.ApprovalRequest`."""
+    """A gated tool call waiting on a human."""
 
     id: str
     tool: str
@@ -155,7 +155,7 @@ async def with_transport_retries(
     backoff_base_s: float = 3.0,
     log: Callable[[str], None] = print,
 ) -> tuple[Any, int]:
-    """Retry `call` on a transport fault, exactly as `AgentRunner._create` does.
+    """Retry `call` on a transport fault.
 
     Foundry re-enumerates the MCP tool list on every invocation, so a single
     dropped `initialize` can fail a call before the model does any work --
