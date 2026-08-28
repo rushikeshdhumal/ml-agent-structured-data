@@ -531,6 +531,43 @@ a hard *prerequisite* of a sign-off, only a policy one. `foundry/stages.py`
 makes the order explicit and reviewable, and `maf/workflow.py` builds the actual
 executed graph from that same list rather than a second, hand-written one.
 
+The graph itself, generated straight from the live `Workflow` object via
+`ds-crew-maf --viz docs/workflow.mmd` (no Azure credentials needed -- it only
+builds the topology, never runs it) rather than hand-drawn, so it can't drift
+out of sync with what actually executes:
+
+```mermaid
+flowchart TD
+  eda["eda (Start)"];
+  cleaning["cleaning"];
+  features["features"];
+  model_selection["model_selection"];
+  hpo["hpo"];
+  ensemble["ensemble"];
+  evaluation["evaluation"];
+  explanation["explanation"];
+  grounding_check["grounding_check"];
+  human_verdict["human_verdict"];
+  finalize["finalize"];
+  eda --> cleaning;
+  cleaning --> features;
+  features --> model_selection;
+  model_selection --> hpo;
+  hpo --> ensemble;
+  ensemble --> evaluation;
+  evaluation --> explanation;
+  explanation --> grounding_check;
+  grounding_check --> human_verdict;
+  human_verdict --> finalize;
+```
+
+Bare topology -- it doesn't mark which stages are gated (see ["The five
+pauses"](#the-five-pauses) above) or that `grounding_check` is a free,
+deterministic node rather than an agent call (see ["Automated quality
+evaluation"](#automated-quality-evaluation)). The source file is
+[`docs/workflow.mmd`](docs/workflow.mmd); regenerate it after any change to
+`foundry/stages.py`'s stage order.
+
 ### What the port gives up, and what it gains
 
 Foundry agent definitions are static, so `{run_id}` and `{target}` cannot be
@@ -647,6 +684,14 @@ encoding while the tool's actual output showed full one-hot (three
 indicator columns) was applied. Read a low `task_adherence` score on a
 gated stage with that caveat -- it isn't automatically a real defect. See
 `ds_crew.maf.azure_evaluation`'s module docstring.
+
+**Portal gap, found live 2026-08-28, not a bug in this project:** runs land
+correctly (verified directly against the project's `/evaluations/runs` API --
+`status: Completed`, real metrics, a working `AiStudioEvaluationUri`) but
+don't render in Foundry's new unified portal UI (`ai.azure.com/nextgen/...`);
+the same URL works once that UI toggle is switched back off. If a
+`studio_url` a run just printed looks empty in the portal, try it with the
+new-UI toggle off before assuming the upload failed.
 
 ### Model lifecycle checks
 

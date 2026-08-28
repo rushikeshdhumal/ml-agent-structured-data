@@ -1,0 +1,22 @@
+flowchart TD
+  eda["eda (Start)"];
+  cleaning["cleaning"];
+  features["features"];
+  model_selection["model_selection"];
+  hpo["hpo"];
+  ensemble["ensemble"];
+  evaluation["evaluation"];
+  explanation["explanation"];
+  grounding_check["grounding_check"];
+  human_verdict["human_verdict"];
+  finalize["finalize"];
+  eda --> cleaning;
+  cleaning --> features;
+  features --> model_selection;
+  model_selection --> hpo;
+  hpo --> ensemble;
+  ensemble --> evaluation;
+  evaluation --> explanation;
+  explanation --> grounding_check;
+  grounding_check --> human_verdict;
+  human_verdict --> finalize;
