@@ -39,7 +39,7 @@ flowchart TD
 
     EDA --> CLEAN --> FEAT --> SEL --> HPO --> ENS --> EVAL --> EXP --> CHECK --> VERDICT --> FIN
 
-    classDef gate fill:#fff3cd,stroke:#b38600
+    classDef gate fill:#123456,stroke:#000000
     class CLEAN,FEAT,SEL,VERDICT,FIN gate
 ```
 
